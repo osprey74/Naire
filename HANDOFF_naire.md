@@ -55,24 +55,26 @@ Windows / macOS 対応の一括リネームツール。
 ## UI レイアウト
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  [● ファイル] [○ フォルダ]  フィルタ:[*▼]  ☑ サブフォルダ再帰 深さ[0] [歯車] │  ← ツールバー
-├────────────┬──────────────────────┬──────────────────────────────┤
-│            │ [定型][高度な][マクロ]                        │
-│  フォルダ   ├──────────────────────┼──────────────────────────────┤
-│  ツリー    │                      │  現在の名前       新しい名前  │
-│  （前回の  │  設定パネル          │  ─────────────────────────── │
-│  パスを    │  （モード別 UI）      │  file_a.jpg  →  img_001.jpg  │
-│  記憶）    │                      │  file_b.jpg  →  img_002.jpg  │
-│            ├──────────────────────┤  ...                         │
-│            │ 連番: ☑フォルダごとリセット [▶進数] │                │
-│            │ 開始[0] ステップ[1]   │                              │
-├────────────┴──────────────────────┴──────────────────────────────┤
-│   [リネーム実行]     [元に戻す Ctrl+Z]     [クリア]              │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  [● ファイル] [○ フォルダ]  フィルタ:[*▼]  ☑ サブフォルダ再帰 深さ[0] [歯車]    │  ← ツールバー
+├────────────┬──────────────────────┬──────────────────────────────────────────┤
+│            │ [定型][高度な][マクロ]                                          │
+│  フォルダ   ├──────────────────────┼──────────────────────────────────────────┤
+│  ツリー    │                      │ 現在の名前    新しい名前    フォルダ      │
+│  （前回の  │  設定パネル          │ ────────────────────────────────────── │
+│  パスを    │  （モード別 UI）      │ file_a.jpg  → img_001.jpg               │
+│  記憶）    │                      │ file_b.jpg  → img_002.jpg   sub1         │
+│            ├──────────────────────┤ file_c.jpg  → img_003.jpg   sub1/inner   │
+│            │ 連番: ☑フォルダごとリセット [▶進数] │                           │
+│            │ 開始[0] ステップ[1]   │                                          │
+├────────────┴──────────────────────┴──────────────────────────────────────────┤
+│   [リネーム実行]     [元に戻す Ctrl+Z]     [クリア]                          │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 連番設定パネルは中央ペイン下部に**常時表示**（`定型` / `高度な` / `マクロ` のどのタブでも見える）。advanced 全モードで使われる `?` `??` `???` `????` 変数のカウンタ動作を制御する。
+
+プレビューパネルは 3 カラム固定: **現在の名前 / 新しい名前 / フォルダ**。フォルダ列は選択ルートからの相対パス（ルート直下なら空欄）。
 
 ---
 
@@ -162,10 +164,32 @@ export interface RenameRecord {
 // スタック上限: 20件（処理単位）。1件の中に何千ファイルが含まれていても1件扱い。
 
 // ── プレビュー行 ─────────────────────────────────────────────
+// 表示カラムは「現在の名前」「新しい名前」「フォルダ」の 3 つ。
+// folder は選択ルートからの相対パス（再帰時に階層を識別するため）。ルート直下なら "" 。
 export interface PreviewItem {
-  original:   string;
-  renamed:    string;
+  original:   string;   // 現在の名前
+  renamed:    string;   // 新しい名前
+  folder:     string;   // 選択ルートからの相対パス（"subdir1/subdir2" など）
+  path:       string;   // ディスク上のフルパス（実行時に必要）
   is_changed: boolean;
+}
+
+// ── マクロステップ処理用アイテム ─────────────────────────────
+// 1 ステップずつ進めるため、original_name（マクロ開始時点）と current_name（直前ステップ適用後）を分離保持する。
+export interface StepItem {
+  path:          string;   // ディスク上のフルパス
+  original_name: string;   // マクロ開始時のファイル名（\orig で参照される値）
+  current_name:  string;   // 直前ステップ適用後の名前
+  folder:        string;   // 選択ルートからの相対パス
+  size:          number;
+  mtime:         string;   // ISO 8601
+}
+
+// マクロ実行の進行状態（クライアント保持）
+export interface MacroExecState {
+  macro_id:    string;
+  step_index:  number;     // 0 = 未開始、N = N ステップ目まで適用済み
+  items:       StepItem[]; // 各ファイルの現在の状態
 }
 
 // ── 連番カウンタ設定（グローバル）────────────────────────────
@@ -213,8 +237,9 @@ src/
 │   │   │   ├── RegexMode.tsx
 │   │   │   └── CharConvertMode.tsx
 │   │   └── macro/
-│   │       ├── MacroEditor.tsx   # ステップリスト（dnd-kit で D&D 並べ替え）
-│   │       └── MacroList.tsx     # 保存済みマクロ一覧
+│   │       ├── MacroPanel.tsx    # マクロ実行画面（選択 + 進行 + 戻す/ステップ/すべて適用）
+│   │       ├── MacroEditor.tsx   # 編集モーダル（ステップリスト dnd-kit で D&D 並べ替え）
+│   │       └── MacroList.tsx     # 保存済みマクロ一覧（ドロップダウン用データソース）
 │   ├── SequencePanel.tsx         # 中央ペイン下部：連番カウンタ設定（常時表示）
 │   ├── SupportButton/
 │   │   ├── SupportButton.tsx     # 検索/置換フィールド横の「サポート▶」ボタン + Popover
@@ -237,29 +262,63 @@ src/
 ```rust
 // src-tauri/src/commands.rs
 
+// ── 定型・高度なリネーム用（一括適用） ─────────────────────
+
 /// リネーム結果のプレビュー生成（ファイルは変更しない）
 #[tauri::command]
 pub async fn preview_rename(
-    folder:    String,
-    steps:     Vec<RenameStepDto>,
-    target:    TargetType,
-    recursive: bool,
-    depth:     u32,                // recursive=true 時のみ有効。0=無制限、N=N 階層
-    filter:    String,             // 表示フィルタ（"*" で全件）
-    seq:       SequenceConfigDto,  // 連番カウンタ（advanced 全モードで使用）
+    folder:           String,
+    steps:            Vec<RenameStepDto>,    // 通常 1 ステップ。マクロは別系統で扱う
+    target:           TargetType,
+    recursive:        bool,
+    depth:            u32,                   // recursive=true 時のみ有効。0=無制限、N=N 階層
+    filter:           String,                // 表示フィルタ（"*" で全件）
+    seq:              SequenceConfigDto,     // 連番カウンタ（advanced 全モードで使用）
+    selected_indexes: Vec<usize>,            // 空 or 全件 → 全部対象、それ以外 → 該当インデックスのみ
 ) -> Result<Vec<PreviewItem>, String>
 
 /// リネーム実行（UNDO 用レコードを返す）
 #[tauri::command]
 pub async fn execute_rename(
+    folder:           String,
+    steps:            Vec<RenameStepDto>,
+    target:           TargetType,
+    recursive:        bool,
+    depth:            u32,
+    filter:           String,
+    seq:              SequenceConfigDto,
+    selected_indexes: Vec<usize>,
+) -> Result<RenameRecord, String>
+
+// ── マクロ用（ステップ処理） ───────────────────────────────
+
+/// マクロモードの初期化：選択フォルダ配下から StepItem 群を構築
+#[tauri::command]
+pub async fn init_macro_items(
     folder:    String,
-    steps:     Vec<RenameStepDto>,
     target:    TargetType,
     recursive: bool,
     depth:     u32,
     filter:    String,
-    seq:       SequenceConfigDto,
+) -> Result<Vec<StepItemDto>, String>
+
+/// 1 ステップ適用してプレビューを更新（ディスクは変更しない）
+/// 戻り値は各 item の新しい current_name
+#[tauri::command]
+pub async fn apply_macro_step(
+    items:            Vec<StepItemDto>,
+    step:             RenameStepDto,
+    seq:              SequenceConfigDto,
+    selected_indexes: Vec<usize>,
+) -> Result<Vec<String>, String>
+
+/// 確定したプレビュー結果をディスクに反映（マクロでも非マクロでも使う）
+#[tauri::command]
+pub async fn apply_rename_to_filesystem(
+    items: Vec<RenameItemDto>,    // {path, new_name}
 ) -> Result<RenameRecord, String>
+
+// ── 共通 ───────────────────────────────────────────────────
 
 /// UNDO（RenameRecord の逆方向リネームをまとめて実行）
 #[tauri::command]
@@ -799,6 +858,39 @@ export function insertAtCursor(
 
 ---
 
+## 対象選択処理仕様
+
+プレビューパネルで一部の行を選択している場合、リネーム処理は選択された行のみを対象にする。
+
+### 挙動
+
+| プレビューでの選択状態 | リネーム対象 |
+|---|---|
+| 何も選択していない | **全件**（暗黙の全選択扱い） |
+| すべて選択している | **全件** |
+| 一部選択している（部分選択） | **選択行のみ** |
+
+部分選択時:
+- 非選択行はプレビューに**残る**（`current_name = original_name` で表示）
+- リネーム実行 (`apply_rename_to_filesystem`) では非選択行はスキップ
+- 連番カウンタは**選択行のみで進む**（非選択行は連番を消費しない。連番が不連続にならない）
+- フィルタを通過した行のうち、検索パターンで match しなくなった行は次回リスト更新時に消える（処理済み扱い）
+
+### Tauri 側の実装
+
+- `selected_indexes: Vec<usize>` を引数に取る
+- 空 (`len == 0`) または全件 (`len == items.len()`) のとき → 全件対象
+- それ以外 → 該当インデックスの行のみ対象
+- 連番カウンタは「対象とみなした行を昇順に走査」して `start, start+step, start+2*step, ...` を割り当て
+
+### マクロモードでの選択
+
+マクロのステップ処理中も同様に動作する:
+- ステップ進行中に行選択を変更すると、次の `[ステップ処理▶]` 押下から新しい選択が反映
+- 過去ステップで適用済みの結果は変わらない（巻き戻したい場合は `[戻す]`）
+
+---
+
 ### 正規表現エンジン — Boost.Regex (FR) との互換性
 
 Naire は Rust の `regex` クレートを採用する。FR は Boost.Regex を使用しており、以下の構文に違いがある。
@@ -826,11 +918,15 @@ Naire は Rust の `regex` クレートを採用する。FR は Boost.Regex を�
 ### 概念
 
 マクロ = 順序付きステップリスト。各ステップは「定型 1 個」または「高度なリネーム操作 1 個」。
-`macro_runner.rs` がステップを `fold` で左から右へ順次適用する。
 
-**`\orig` 変数**：fold は毎ステップでファイル名を上書きするため、中間ステップで元のファイル名を参照できるよう
-`MacroContext` に `original_name`（マクロ開始時点のファイル名）を保持する。
-置換文字列の `\orig` はこの値に展開される。
+**実行モデル: ステップ処理**。マクロは 1 ステップずつ進める。
+- ユーザは `[ステップ処理▶]` を 1 回押すごとに 1 ステップが適用され、結果がプレビューに反映される
+- 中断・確認・進行が可能。任意のタイミングで `[戻す]` 押下によりマクロ開始前（step 0）に巻き戻る
+- ファイルへの書き込みは `[リネーム実行]` 押下時のみ（プレビュー = 書き込み前のメモリ上の状態）
+
+定型・高度なリネーム単体（マクロを使わないモード）は従来通り**一括適用**（`preview_rename` → `execute_rename`）。
+
+**`\orig` 変数**：ステップ処理は毎ステップで `current_name` を上書きするため、`StepItem` に `original_name`（マクロ開始時点 = step 0 の名前）を保持する。置換文字列の `\orig` はこの値に展開される。
 
 ```rust
 // src-tauri/src/rename/macro_runner.rs
@@ -844,23 +940,20 @@ pub struct FileContext {
     pub seq:      u64,                // 連番カウンタ（? ?? ??? ????）
 }
 
-pub struct MacroContext<'a> {
+pub struct StepContext<'a> {
     pub file_ctx:      &'a FileContext,  // パス・サイズ・mtime・連番
     pub original_name: String,           // マクロ開始時点のファイル名（\orig で参照）
 }
 
-pub fn run_macro(filename: &str, steps: &[RenameStepDto], file_ctx: &FileContext) -> String {
-    let ctx = MacroContext {
-        file_ctx,
-        original_name: filename.to_string(),
-    };
-    steps.iter().fold(filename.to_string(), |name, step| {
-        apply_step(&name, step, &ctx)
-    })
+/// 1 ステップを 1 ファイルに適用する。マクロ用の apply_macro_step コマンドおよび
+/// 定型・高度なリネームの一括適用 (run_steps_batch) の共通エントリポイント。
+pub fn apply_step(current: &str, step: &RenameStepDto, ctx: &StepContext) -> String {
+    // 各ステップ種別ごとの処理を dispatch
+    // 置換文字列の \orig 展開は variables::expand を経由
 }
 
 // variables.rs で \orig を展開
-fn expand_variables(template: &str, current: &str, ctx: &MacroContext) -> String {
+fn expand_variables(template: &str, current: &str, ctx: &StepContext) -> String {
     template
         .replace(r"\orig", &ctx.original_name)
         // ... 既存の \0 \t \e \f 等の展開
@@ -868,7 +961,29 @@ fn expand_variables(template: &str, current: &str, ctx: &MacroContext) -> String
 }
 ```
 
-### MacroEditor.tsx の UI
+### マクロタブ UI（実行画面）
+
+```
+┌──────────────────────────────────────────────────────┐
+│ マクロ: [▼ 作者ソートキー追加          ]              │
+│ [編集] [新規] [↑インポート]                          │
+│ ──────────────────────────────────────              │
+│ ステップ進行: 2 / 4                                   │
+│ 現在のステップ: [定型] カタカナ → ひらがな             │
+│                                                      │
+│ [◀戻す]   [ステップ処理▶]   [すべて適用]             │
+└──────────────────────────────────────────────────────┘
+```
+
+操作:
+- `[▼ マクロ選択]` ドロップダウン: 保存済みマクロから 1 つ選択。**ステップ進行中（step_index > 0）はロック**（変更不可）
+- `[編集]` `[新規]`: モーダルで MacroEditor を開く
+- `[↑インポート]`: JSON ファイルから取り込み
+- `[ステップ処理▶]`: 現在のステップ index を 1 進めて Rust に `apply_macro_step` を invoke。プレビュー更新
+- `[◀戻す]`: 何ステップ進んでいてもマクロ開始前（step 0）に巻き戻す。`current_name` を `original_name` で上書きしプレビュー更新。`[リネーム実行]` でディスク反映前ならいつでも巻き戻せる
+- `[すべて適用]`: 残りステップを連続で apply（プレビューだけ更新、ディスクは未変更）
+
+### MacroEditor モーダル UI
 
 ```
 ┌──────────────────────────────────────────┐
@@ -881,27 +996,14 @@ fn expand_variables(template: &str, current: &str, ctx: &MacroContext) -> String
 │           置換: \f_\1_001                    │
 │ ≡ Step 4  [定型▼] 全角→半角（拡張子除く）[×] │
 │                                          │
-│ [+ ステップ追加]    [保存]    [削除]      │
+│ [+ ステップ追加]    [保存]    [削除]    [↓エクスポート] │
 └──────────────────────────────────────────┘
 ```
 
 - ステップ追加: モード選択（定型 / ワイルドカード / 正規表現 / 文字変換）→ 選択後にパラメータが即展開
 - 並び替え: `dnd-kit` による D&D
 - 保存: `AppConfig.macros` に追記して `tauri-plugin-store` へ永続化
-
-### MacroList.tsx の UI（インポート／エクスポート）
-
-```
-┌──────────────────────────────────────────┐
-│ 保存済みマクロ              [＋新規] [↑インポート] │
-│                                          │
-│ > コミック整理     [実行] [編集] [↓] [×] │
-│ > 作者ソートキー追加 [実行] [編集] [↓] [×] │
-│                                          │
-│ ※ [↓] = このマクロを JSON エクスポート  │
-│    [↑インポート] = JSON ファイルから追加 │
-└──────────────────────────────────────────┘
-```
+- `[↓エクスポート]`: 編集中のマクロ単体を JSON ファイルに書き出す
 
 ---
 
@@ -1148,18 +1250,19 @@ Step 1  [正規表現]  検索: ^\[(.)(.*)\].*   置換: \l\1
 
 ## 実装優先順位
 
-1. **骨格**: フォルダツリー + ファイル一覧表示 + プレビューパネル
+1. **骨格**: フォルダツリー + ファイル一覧表示 + プレビューパネル（3 カラム: 現在の名前 / 新しい名前 / フォルダ）
 2. **表示フィルタ**（list_entries で絞り込み）
-3. **正規表現モード**（コア機能・最頻用途）
-4. **サポートボタン**（検索/置換のスニペット挿入。最初は regex の最低限から）
-5. **連番カウンタ**（10 進数のみ → 後続で 16 進数 / 英大文字を追加）
-6. **UNDO 機構**
-7. **定型実装**（カテゴリ順に順次追加）
-8. **ワイルドカードモード**
-9. **文字変換モード**
-10. **マクロシステム**（`\orig` 変数含む）
-11. **マクロ JSON インポート／エクスポート**
-12. **設定永続化**（最終仕上げ）
+3. **対象選択処理**（プレビューでの行選択を反映）
+4. **正規表現モード**（コア機能・最頻用途）
+5. **サポートボタン**（検索/置換のスニペット挿入。最初は regex の最低限から）
+6. **連番カウンタ**（10 進数のみ → 後続で 16 進数 / 英大文字を追加）
+7. **UNDO 機構**
+8. **定型実装**（カテゴリ順に順次追加）
+9. **ワイルドカードモード**
+10. **文字変換モード**
+11. **マクロシステム**（ステップ処理 + `\orig` 変数）
+12. **マクロ JSON インポート／エクスポート**
+13. **設定永続化**（最終仕上げ）
 
 ---
 
@@ -1194,6 +1297,11 @@ Flexible Renamer 後継の一括リネームツール（Tauri v2 + React + TypeS
 - 検索/置換 入力欄のサポートボタンは src/components/SupportButton/ に集約。項目定義は support-items.ts、挿入ロジックは insert-at-cursor.ts に分離
 - サポートメニュー項目はモード × フィールドの 6 コンテキストごとに定義（wildcard.search / .replace, regex.search / .replace, char.search / .replace）
 - マクロ専用変数 `\orig` のサポート項目はマクロ編集時の advanced ステップでのみ表示する
+- マクロ実行はステップ処理方式（1 クリック = 1 ステップ）。`apply_macro_step` を都度 invoke してプレビュー更新
+- マクロの `[戻す]` は何ステップ進んでいてもマクロ開始前（step 0）に巻き戻す。途中ステップへの戻りは持たない
+- マクロ進行中（step_index > 0）はマクロ選択ドロップダウンをロックする。差し替えたい場合はユーザに `[戻す]` を促す
+- ファイルシステムへの実際のリネームは `apply_rename_to_filesystem` でのみ行う。プレビューはメモリ上の状態
+- 部分選択時は対象を選択行に絞る。連番は選択行のみで進める。非選択行はプレビューに残す
 - 濁音・半濁音除去は NFD → U+3099/U+309A 除去 → NFC（unicode-normalization クレート）
 - `\orig` 変数はマクロ専用。`MacroContext::original_name` に保持し `variables.rs` で展開する
 - 日時系変数（`\Y \y \m \d \H \I \M \S \p \a \A \b \B`）は **ファイル mtime ベース**（`std::fs::Metadata::modified()` を `chrono::DateTime<Local>` に変換）。現在日時ではない
