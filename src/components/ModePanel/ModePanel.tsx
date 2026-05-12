@@ -38,6 +38,8 @@ export interface ModePanelProps {
   onMacroSelect: (id: string | null) => void;
   onMacroCreateNew: () => void;
   onMacroEdit: (id: string) => void;
+  onMacroImport: () => void;
+  onMacroExportAll: () => void;
   onMacroStepForward: () => void;
   onMacroApplyAll: () => void;
   onMacroReset: () => void;
@@ -71,6 +73,8 @@ export default function ModePanel(props: ModePanelProps) {
     onMacroSelect,
     onMacroCreateNew,
     onMacroEdit,
+    onMacroImport,
+    onMacroExportAll,
     onMacroStepForward,
     onMacroApplyAll,
     onMacroReset,
@@ -185,6 +189,8 @@ export default function ModePanel(props: ModePanelProps) {
             onSelect={onMacroSelect}
             onCreateNew={onMacroCreateNew}
             onEdit={onMacroEdit}
+            onImport={onMacroImport}
+            onExportAll={onMacroExportAll}
             onStepForward={onMacroStepForward}
             onApplyAll={onMacroApplyAll}
             onReset={onMacroReset}

@@ -18,10 +18,10 @@
 | 9 | ワイルドカードモード | 完了 |
 | 10 | 文字変換モード | 完了 |
 | 11 | マクロシステム | 完了 |
-| 12 | マクロ JSON 入出力 | 未着手 |
+| 12 | マクロ JSON 入出力 | 完了 |
 | 13 | 設定永続化 | 未着手 |
 
-完了フェーズ: 11 / 13
+完了フェーズ: 12 / 13
 
 ---
 
@@ -291,7 +291,48 @@
 - [すべて適用] は残りステップを順次 invoke。失敗したらそこで停止
 - マクロステップの reorder は dnd-kit ではなく **上下ボタン**で実装（シンプル化）。dnd-kit への移行は将来検討
 - **永続化はまだしていない**（Phase 13 で `tauri-plugin-store` に保存）。アプリ再起動でマクロは消える
-- **JSON インポート／エクスポートは Phase 12** で実装
+
+## Phase 12 — マクロ JSON インポート／エクスポート
+
+### バックエンド
+- [x] `macro_io.rs`:
+  - `parse_macros_json(text)`: 単一オブジェクト・配列の自動判別、`id` 再生成
+  - `serialize_macros(macros)`: 1 件はオブジェクト、複数は配列で出力
+  - `sanitize_filename(name)`: Windows/macOS 禁止文字を `_` に置換、空文字は `macro` にフォールバック
+  - `import_via_dialog(app)`: tauri-plugin-dialog でファイル選択 → 読み込み → パース
+  - `export_via_dialog(app, macros)`: デフォルトファイル名生成（単一 = `naire_macro_{name}.json`、複数 = `naire_macros.json`）→ 保存ダイアログ → 書き込み
+- [x] `commands.rs`: `export_macros` / `import_macros` を `macro_io` の関数に薄ラッパー
+- [x] `RenameStepDto` に `skip_serializing_if = "Option::is_none"` を追加 → JSON 出力が `kind` 不要なフィールドを含まずクリーンに
+- [x] テスト 8 件追加（単一/配列のパース、空白付きパース、エラー処理、シリアライズ形式、ファイル名 sanitize）→ 計 76 件 PASS
+
+### フロントエンド
+- [x] `MacroPanel.tsx`: ↑インポート / ↓全エクスポート ボタンを追加（マクロ選択行の下に IO 行を新設）
+- [x] `MacroEditor.tsx`: フッターに ↓エクスポート ボタンを追加（編集中マクロの単体保存）。`name.trim()` を反映して保存前の名前で出力
+- [x] `App.tsx`: `onMacroImport` / `onMacroExportAll` / `onMacroEditorExport` ハンドラ
+  - インポート成功時は `macros` 配列に push、件数を通知
+  - キャンセル時はエラー通知を出さない（メッセージに「キャンセル」を含むかで判定）
+
+### Claude 連携用フォーマット
+HANDOFF 仕様の単一マクロ JSON 例:
+```json
+{
+  "id": "uuid-v4",
+  "name": "作者ソートキー追加",
+  "created_at": "2026-05-10T20:00:00+09:00",
+  "updated_at": "2026-05-10T20:00:00+09:00",
+  "steps": [
+    {"kind": "regex", "search": "^\\[(.)(.*?)\\].*", "replace": "\\l\\1"},
+    {"kind": "builtin", "op": {"type": "kana_convert", "conversion": "kata_to_hira", "skip_ext": false}},
+    {"kind": "builtin", "op": {"type": "remove_voiced_mark", "skip_ext": false}},
+    {"kind": "regex", "search": "^(.*)$", "replace": "\\1 \\orig"}
+  ]
+}
+```
+`id` はインポート時に再生成されるので任意の文字列で OK。Claude で生成して直接 Naire に取り込めるフォーマット。
+
+> 仕様メモ:
+> - キャンセル時の判定はメッセージ内容（「キャンセルされました」）でやっており、I18N 対応時に見直し必要
+> - 既存のマクロと同名でもインポートできる（id が違うので別物扱い）
 
 ## Phase 3 以降
 

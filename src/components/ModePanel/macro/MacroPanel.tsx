@@ -10,6 +10,8 @@ export interface MacroPanelProps {
   onSelect: (id: string | null) => void;
   onCreateNew: () => void;
   onEdit: (id: string) => void;
+  onImport: () => void;
+  onExportAll: () => void;
   onStepForward: () => void;
   onApplyAll: () => void;
   onReset: () => void;
@@ -24,6 +26,8 @@ export default function MacroPanel(props: MacroPanelProps) {
     onSelect,
     onCreateNew,
     onEdit,
+    onImport,
+    onExportAll,
     onStepForward,
     onApplyAll,
     onReset,
@@ -64,6 +68,26 @@ export default function MacroPanel(props: MacroPanelProps) {
           disabled={!current || running}
         >
           編集
+        </button>
+      </div>
+
+      <div className={styles.ioRow}>
+        <button
+          type="button"
+          className={styles.btn}
+          onClick={onImport}
+          title="JSON ファイルからマクロを取り込み"
+        >
+          ↑ インポート
+        </button>
+        <button
+          type="button"
+          className={styles.btn}
+          onClick={onExportAll}
+          disabled={macros.length === 0}
+          title="全マクロを JSON ファイルへ書き出し"
+        >
+          ↓ 全エクスポート
         </button>
       </div>
 

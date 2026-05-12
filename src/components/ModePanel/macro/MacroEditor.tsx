@@ -9,10 +9,11 @@ export interface MacroEditorProps {
   onSave: (m: Macro) => void;
   onDelete: () => void;
   onCancel: () => void;
+  onExport: (m: Macro) => void;
 }
 
 export default function MacroEditor(props: MacroEditorProps) {
-  const { macro, onSave, onDelete, onCancel } = props;
+  const { macro, onSave, onDelete, onCancel, onExport } = props;
   const [name, setName] = useState(macro.name);
   const [steps, setSteps] = useState<RenameStep[]>(macro.steps);
 
@@ -140,13 +141,29 @@ export default function MacroEditor(props: MacroEditorProps) {
         </div>
 
         <div className={styles.footer}>
-          <button
-            type="button"
-            className={`${styles.btn} ${styles.danger}`}
-            onClick={onDelete}
-          >
-            削除
-          </button>
+          <div className={styles.footerLeft}>
+            <button
+              type="button"
+              className={`${styles.btn} ${styles.danger}`}
+              onClick={onDelete}
+            >
+              削除
+            </button>
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={() =>
+                onExport({
+                  ...macro,
+                  name: name.trim() || "(無題)",
+                  steps,
+                })
+              }
+              title="編集中のマクロを JSON ファイルへ書き出し"
+            >
+              ↓ エクスポート
+            </button>
+          </div>
           <div className={styles.footerRight}>
             <button type="button" className={styles.btn} onClick={onCancel}>
               キャンセル

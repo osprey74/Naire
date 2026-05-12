@@ -380,6 +380,58 @@ export default function App() {
     setMacroStepIndex(0);
   };
 
+  const onMacroImport = async () => {
+    try {
+      const imported = await invoke<Macro[]>("import_macros");
+      if (imported.length === 0) {
+        setNotice({ kind: "error", message: "マクロが読み込まれませんでした" });
+        return;
+      }
+      setMacros((arr) => [...arr, ...imported]);
+      setNotice({
+        kind: "success",
+        message: `${imported.length} 件のマクロをインポートしました`,
+      });
+    } catch (e) {
+      const msg = String(e);
+      // ユーザがキャンセルしたときはエラー通知しない
+      if (!msg.includes("キャンセル")) {
+        setNotice({ kind: "error", message: msg });
+      }
+    }
+  };
+
+  const onMacroExportAll = async () => {
+    if (macros.length === 0) return;
+    try {
+      await invoke<void>("export_macros", { macros });
+      setNotice({
+        kind: "success",
+        message: `${macros.length} 件のマクロをエクスポートしました`,
+      });
+    } catch (e) {
+      const msg = String(e);
+      if (!msg.includes("キャンセル")) {
+        setNotice({ kind: "error", message: msg });
+      }
+    }
+  };
+
+  const onMacroEditorExport = async (m: Macro) => {
+    try {
+      await invoke<void>("export_macros", { macros: [m] });
+      setNotice({
+        kind: "success",
+        message: `「${m.name || "(無題)"}」をエクスポートしました`,
+      });
+    } catch (e) {
+      const msg = String(e);
+      if (!msg.includes("キャンセル")) {
+        setNotice({ kind: "error", message: msg });
+      }
+    }
+  };
+
   return (
     <div className={styles.app}>
       <Toolbar
@@ -432,6 +484,8 @@ export default function App() {
             onMacroSelect={onMacroSelectChange}
             onMacroCreateNew={onMacroCreateNew}
             onMacroEdit={onMacroEdit}
+            onMacroImport={onMacroImport}
+            onMacroExportAll={onMacroExportAll}
             onMacroStepForward={onMacroStepForward}
             onMacroApplyAll={onMacroApplyAll}
             onMacroReset={onMacroReset}
@@ -456,6 +510,7 @@ export default function App() {
           onSave={onMacroEditorSave}
           onDelete={onMacroEditorDelete}
           onCancel={() => setEditingMacro(null)}
+          onExport={onMacroEditorExport}
         />
       )}
 

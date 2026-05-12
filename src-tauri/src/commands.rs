@@ -63,15 +63,15 @@ pub struct SequenceConfigDto {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RenameStepDto {
     pub kind: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replace: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub op: Option<serde_json::Value>,
 }
 
@@ -639,13 +639,13 @@ pub async fn undo_rename(record: RenameRecord) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn export_macros(
-    _app: tauri::AppHandle,
-    _macros: Vec<Macro>,
+    app: tauri::AppHandle,
+    macros: Vec<Macro>,
 ) -> Result<(), String> {
-    Err("not implemented".into())
+    crate::macro_io::export_via_dialog(&app, macros)
 }
 
 #[tauri::command]
-pub async fn import_macros(_app: tauri::AppHandle) -> Result<Vec<Macro>, String> {
-    Err("not implemented".into())
+pub async fn import_macros(app: tauri::AppHandle) -> Result<Vec<Macro>, String> {
+    crate::macro_io::import_via_dialog(&app)
 }
