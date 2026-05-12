@@ -111,9 +111,11 @@
 ## Phase 6 — 連番カウンタ
 
 ### バックエンド
-- [x] `sequence.rs`: `format_alpha` を bijective → **positional base-26** に変更
-  - 理由: HANDOFF の alpha 仕様マッピング表（bijective）と例示列（positional）が矛盾。bijective + パディングは `digits=2` で値 0 と 26 が "AA" で重複しリネーム衝突するため、例示列に合わせて positional 採用。コードに NOTE コメント明記
-- [x] `sequence.rs` テスト: padding / positional / 桁あふれ / 3 桁 / `parse_numbering` 計 6 件
+- [x] `sequence.rs`: `format_alpha` を **bijective base-26**（0-indexed）で実装
+  - `digits` パラメータは alpha 時は無視（パディングしない）
+  - 値 0 → `A`、値 26 → `AA`、値 701 → `ZZ`、値 702 → `AAA`
+  - 当初は positional + min-width padding で実装したが、値 0 と値 26 が両方 "AA" になる重複や、値 676 で突然 3 文字に増える挙動の違和感があり bijective に変更（HANDOFF マッピング表とも整合）
+- [x] `sequence.rs` テスト: bijective 単/2/3 文字、`digits` 無視確認、`parse_numbering` 計 6 件
 - [x] `variables.rs` `FileContext`: `seq_value: u64`, `seq_numbering: Numbering` フィールド追加
 - [x] `variables.rs` `expand_template`:
   - 連続する `?` を最大 4 個まで連番変数として展開（`?`〜`????`）
@@ -131,7 +133,6 @@
 - 変更なし: `SequencePanel` と `usePreview` の SequenceConfig 引き渡しは Phase 1 で既に通電済み
 
 > 注:
-> - alpha 仕様は HANDOFF と乖離（positional 採用）。マッピング表記載の `ZZ=701, AAA=702` ではなく `ZZ=675, BAA=676` で動作する
 > - 日時系変数（`\Y \m \d \H` 等）と大文字小文字制御（`\u \U \l \L \E`）はまだリテラル出力。後続フェーズで実装
 
 ## Phase 7 — UNDO 機構

@@ -329,10 +329,13 @@ mod tests {
 
     #[test]
     fn template_sequence_alpha() {
+        // alpha は bijective: value=26 → "AA"（digits 指定は無視）
         let mut c = ctx("/x/folder/file.txt");
         c.seq_value = 26;
         c.seq_numbering = Numbering::Alpha;
-        assert_eq!(expand_template("??", None, &c), "BA");
+        assert_eq!(expand_template("??", None, &c), "AA");
+        c.seq_value = 0;
+        assert_eq!(expand_template("?", None, &c), "A");
     }
 
     #[test]

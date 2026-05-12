@@ -20,35 +20,25 @@ pub fn format_seq(value: u64, digits: usize, numbering: Numbering) -> String {
     match numbering {
         Numbering::Decimal => format!("{:0>width$}", value, width = digits),
         Numbering::Hex => format!("{:0>width$X}", value, width = digits),
-        Numbering::Alpha => format_alpha(value, digits),
+        // alpha は bijective なので桁固定の概念を持たず、`digits` は無視する。
+        Numbering::Alpha => format_alpha(value),
     }
 }
 
-/// 英大文字連番（A=0, B=1, ..., Z=25, BA=26, ZZ=675, BAA=676, ...）。
+/// 英大文字連番（bijective base-26、0 始まり）。
 ///
-/// **NOTE**: HANDOFF の `alpha` 仕様は表記揺れがあり、マッピング表
-/// （`ZZ=701, AAA=702`）は bijective base-26 を示しているが、例示列
-/// （`AA, AB, ..., AZ, BA, ...`）は positional base-26 を示している。
-/// bijective だと、`digits=2` で値 0→"AA"(pad), 26→"AA"(natural) が
-/// 同一文字列を生成する重複が発生してリネーム衝突を引き起こすため、
-/// Naire では **positional base-26 with A=0 padding** を採用した。
-/// 結果として `ZZ=675, BAA=676` となり、マッピング表とはずれる。
-fn format_alpha(value: u64, digits: usize) -> String {
+/// A=0, B=1, ..., Z=25, AA=26, AB=27, ..., AZ=51, BA=52, ..., ZZ=701, AAA=702。
+/// 文字数は値に応じて自然に伸びるため、`digits` パラメータによるパディングは
+/// 行わない（positional 系のように値域途中で桁が増える違和感を避ける）。
+fn format_alpha(value: u64) -> String {
+    let mut n = value + 1; // 1-indexed の bijective に変換
     let mut chars = Vec::new();
-    if value == 0 {
-        chars.push('A');
-    } else {
-        let mut v = value;
-        while v > 0 {
-            chars.push((b'A' + (v % 26) as u8) as char);
-            v /= 26;
-        }
+    while n > 0 {
+        n -= 1;
+        chars.push((b'A' + (n % 26) as u8) as char);
+        n /= 26;
     }
-    let mut s: String = chars.iter().rev().collect();
-    while s.len() < digits {
-        s.insert(0, 'A');
-    }
-    s
+    chars.iter().rev().collect()
 }
 
 #[cfg(test)]
@@ -70,26 +60,31 @@ mod tests {
     }
 
     #[test]
-    fn alpha_padding() {
-        assert_eq!(format_seq(0, 2, Numbering::Alpha), "AA");
-        assert_eq!(format_seq(25, 2, Numbering::Alpha), "AZ");
+    fn alpha_bijective_single_digit() {
+        assert_eq!(format_seq(0, 1, Numbering::Alpha), "A");
+        assert_eq!(format_seq(25, 1, Numbering::Alpha), "Z");
     }
 
     #[test]
-    fn alpha_positional() {
-        // 例示列に従う positional base-26
-        assert_eq!(format_seq(26, 2, Numbering::Alpha), "BA");
-        assert_eq!(format_seq(51, 2, Numbering::Alpha), "BZ");
-        assert_eq!(format_seq(675, 2, Numbering::Alpha), "ZZ");
-        // 桁あふれ
-        assert_eq!(format_seq(676, 2, Numbering::Alpha), "BAA");
+    fn alpha_bijective_two_digit() {
+        // HANDOFF マッピング表どおりの bijective base-26
+        assert_eq!(format_seq(26, 1, Numbering::Alpha), "AA");
+        assert_eq!(format_seq(51, 1, Numbering::Alpha), "AZ");
+        assert_eq!(format_seq(52, 1, Numbering::Alpha), "BA");
+        assert_eq!(format_seq(701, 1, Numbering::Alpha), "ZZ");
     }
 
     #[test]
-    fn alpha_three_digit_padding() {
-        assert_eq!(format_seq(0, 3, Numbering::Alpha), "AAA");
-        assert_eq!(format_seq(25, 3, Numbering::Alpha), "AAZ");
-        assert_eq!(format_seq(26, 3, Numbering::Alpha), "ABA");
+    fn alpha_bijective_three_digit() {
+        assert_eq!(format_seq(702, 1, Numbering::Alpha), "AAA");
+    }
+
+    #[test]
+    fn alpha_ignores_digits_param() {
+        // digits を指定してもパディングしない（bijective の挙動）
+        assert_eq!(format_seq(0, 3, Numbering::Alpha), "A");
+        assert_eq!(format_seq(25, 4, Numbering::Alpha), "Z");
+        assert_eq!(format_seq(26, 4, Numbering::Alpha), "AA");
     }
 
     #[test]
