@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  # ── 1. テスト ──────────────────────────────────────────────────
+  test:
+    name: Rust Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Tauri system dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+  # ── 2. ビルド & リリース ───────────────────────────────────────
+  build:
+    name: Build (${{ matrix.os }})
+    needs: test
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ''
+          - os: macos-latest
+            args: '--target universal-apple-darwin'
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Naire v__VERSION__'
+          releaseBody: |
+            一括リネームツール Naire の Windows / macOS バイナリです。
+            詳細は [RELEASE_NOTES_v__VERSION__.md](https://github.com/${{ github.repository }}/blob/main/RELEASE_NOTES_v__VERSION__.md) を参照してください。
+
+            ---
+
+            Naire — bulk file/folder rename tool. Binaries for Windows and macOS.
+            See [RELEASE_NOTES_v__VERSION__.md](https://github.com/${{ github.repository }}/blob/main/RELEASE_NOTES_v__VERSION__.md) for details.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

@@ -72,7 +72,10 @@ Windows / macOS 対応の一括リネームツール。正規表現・ワイル�
 
 ## CI/CD
 
-- **cicd**: false（実装が進んだら GitHub Actions を mandala-ya / kazahana 構成で追加予定）
+- **cicd**: true
+- **cicd_trigger**: tag push（`v*.*.*` 形式）
+- **cicd_platform**: GitHub Actions（Windows x86_64 + macOS universal）
+- **cicd_note**: タグプッシュで自動ビルド & Release ドラフト作成。`ci.yml` は push/PR で Rust 単体テスト + フロントビルドのみ実行
 
 ## SNS
 
