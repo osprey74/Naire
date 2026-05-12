@@ -112,6 +112,12 @@ export interface SequenceConfig {
   numbering: "decimal" | "hex" | "alpha";
 }
 
+// ── PreviewPanel カラム幅（px）─────────────────────────────────
+export interface PreviewColumnWidths {
+  original: number;
+  renamed: number;
+}
+
 // ── アプリ設定 ───────────────────────────────────────────────
 export interface AppConfig {
   last_folder: string;
@@ -124,4 +130,5 @@ export interface AppConfig {
   seq: SequenceConfig;
   window: { width: number; height: number; x?: number; y?: number };
   macros: Macro[];
+  column_widths?: PreviewColumnWidths;
 }

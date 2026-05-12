@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { PreviewItem } from "../types/rename";
+import type { PreviewColumnWidths, PreviewItem } from "../types/rename";
 import styles from "./PreviewPanel.module.css";
 
 export interface PreviewPanelProps {
@@ -8,14 +8,25 @@ export interface PreviewPanelProps {
   error: string | null;
   selectedPaths: Set<string>;
   onSelectionChange: (next: Set<string>) => void;
+  columnWidths: PreviewColumnWidths;
+  onColumnWidthsChange: (next: PreviewColumnWidths) => void;
 }
 
+const MIN_COL_WIDTH = 60;
+
 export default function PreviewPanel(props: PreviewPanelProps) {
-  const { items, loading, error, selectedPaths, onSelectionChange } = props;
+  const {
+    items,
+    loading,
+    error,
+    selectedPaths,
+    onSelectionChange,
+    columnWidths,
+    onColumnWidthsChange,
+  } = props;
   const anchorRef = useRef<number | null>(null);
 
   // items が変化したら、現在の items に存在しないパスを selectedPaths から間引く。
-  // フィルタ変更やフォルダ移動で消えた行の選択を引きずらないため。
   useEffect(() => {
     if (selectedPaths.size === 0) return;
     const present = new Set(items.map((i) => i.path));
@@ -50,7 +61,6 @@ export default function PreviewPanel(props: PreviewPanelProps) {
   };
 
   const handleWrapClick = (e: React.MouseEvent) => {
-    // テーブル外の空白部クリックで選択解除
     if (e.target === e.currentTarget) {
       onSelectionChange(new Set());
       anchorRef.current = null;
@@ -61,6 +71,30 @@ export default function PreviewPanel(props: PreviewPanelProps) {
     onSelectionChange(new Set(items.map((i) => i.path)));
   };
 
+  // ── カラムリサイズ ────────────────────────────────────────
+  const startResize = (col: keyof PreviewColumnWidths, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = columnWidths[col];
+
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      const newWidth = Math.max(MIN_COL_WIDTH, startWidth + delta);
+      onColumnWidthsChange({ ...columnWidths, [col]: newWidth });
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
   const selectedCount = selectedPaths.size;
   const allSelected = items.length > 0 && selectedCount === items.length;
 
@@ -68,11 +102,37 @@ export default function PreviewPanel(props: PreviewPanelProps) {
     <div className={styles.panel}>
       <div className={styles.tableWrap} onClick={handleWrapClick}>
         <table className={styles.table}>
+          <colgroup>
+            {/* 動的なカラム幅のため inline style を使う（リサイズ機能の本質） */}
+            {/* eslint-disable-next-line react/forbid-dom-props */}
+            <col style={{ width: `${columnWidths.original}px` }} />
+            {/* eslint-disable-next-line react/forbid-dom-props */}
+            <col style={{ width: `${columnWidths.renamed}px` }} />
+            <col />
+          </colgroup>
           <thead>
             <tr>
-              <th className={styles.col}>現在の名前</th>
-              <th className={styles.col}>新しい名前</th>
-              <th className={styles.col}>フォルダ</th>
+              <th className={styles.col}>
+                <span className={styles.colLabel}>現在の名前</span>
+                <span
+                  className={styles.resizer}
+                  onMouseDown={(e) => startResize("original", e)}
+                  role="separator"
+                  aria-label="現在の名前カラムの幅を調整"
+                />
+              </th>
+              <th className={styles.col}>
+                <span className={styles.colLabel}>新しい名前</span>
+                <span
+                  className={styles.resizer}
+                  onMouseDown={(e) => startResize("renamed", e)}
+                  role="separator"
+                  aria-label="新しい名前カラムの幅を調整"
+                />
+              </th>
+              <th className={styles.col}>
+                <span className={styles.colLabel}>フォルダ</span>
+              </th>
             </tr>
           </thead>
           <tbody>

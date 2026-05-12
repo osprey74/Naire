@@ -21,6 +21,7 @@ import type {
   AppConfig,
   BuiltinOp,
   Macro,
+  PreviewColumnWidths,
   PreviewItem,
   RenameRecord,
   RenameStep,
@@ -35,6 +36,11 @@ const DEFAULT_SEQ: SequenceConfig = {
   step: 1,
   reset_per_folder: true,
   numbering: "decimal",
+};
+
+const DEFAULT_COLUMN_WIDTHS: PreviewColumnWidths = {
+  original: 240,
+  renamed: 240,
 };
 
 type Notice = { kind: "success" | "error"; message: string };
@@ -58,6 +64,9 @@ export default function App() {
   const [charFrom, setCharFrom] = useState("");
   const [charTo, setCharTo] = useState("");
   const [builtinOp, setBuiltinOp] = useState<BuiltinOp | null>(null);
+  const [columnWidths, setColumnWidths] = useState<PreviewColumnWidths>(
+    DEFAULT_COLUMN_WIDTHS,
+  );
   // ── マクロ関連の state ──────────────────────────────────────
   const [macros, setMacros] = useState<Macro[]>([]);
   const [currentMacroId, setCurrentMacroId] = useState<string | null>(null);
@@ -259,6 +268,13 @@ export default function App() {
         setFilterHistory(initialConfig.filter_history);
       if (initialConfig.seq) setSeq(initialConfig.seq);
       if (Array.isArray(initialConfig.macros)) setMacros(initialConfig.macros);
+      if (
+        initialConfig.column_widths &&
+        typeof initialConfig.column_widths.original === "number" &&
+        typeof initialConfig.column_widths.renamed === "number"
+      ) {
+        setColumnWidths(initialConfig.column_widths);
+      }
     }
     setConfigApplied(true);
   }, [configLoaded, initialConfig]);
@@ -279,6 +295,7 @@ export default function App() {
       // window state は将来対応（Phase 13 では placeholder）
       window: { width: 1100, height: 720 },
       macros,
+      column_widths: columnWidths,
     };
     const t = setTimeout(() => persistConfig(cfg), 500);
     return () => clearTimeout(t);
@@ -293,6 +310,7 @@ export default function App() {
     filterHistory,
     seq,
     macros,
+    columnWidths,
   ]);
 
   // ── マクロハンドラ ──────────────────────────────────────────
@@ -557,6 +575,8 @@ export default function App() {
             error={displayError}
             selectedPaths={selectedPaths}
             onSelectionChange={setSelectedPaths}
+            columnWidths={columnWidths}
+            onColumnWidthsChange={setColumnWidths}
           />
         </div>
       </div>
