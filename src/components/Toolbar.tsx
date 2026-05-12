@@ -13,6 +13,7 @@ export interface ToolbarProps {
   onFilterChange: (s: string) => void;
   filterHistory: string[];
   onFilterCommit: (s: string) => void;
+  onAboutClick: () => void;
 }
 
 export default function Toolbar(props: ToolbarProps) {
@@ -27,6 +28,7 @@ export default function Toolbar(props: ToolbarProps) {
     onFilterChange,
     filterHistory,
     onFilterCommit,
+    onAboutClick,
   } = props;
 
   return (
@@ -86,6 +88,15 @@ export default function Toolbar(props: ToolbarProps) {
           onChange={(e) => onDepthChange(Math.max(0, Number(e.target.value) || 0))}
         />
       </label>
+
+      <button
+        type="button"
+        className={styles.aboutBtn}
+        onClick={onAboutClick}
+        title="アプリについて"
+      >
+        アプリについて
+      </button>
     </div>
   );
 }

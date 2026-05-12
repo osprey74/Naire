@@ -649,3 +649,106 @@ pub async fn export_macros(
 pub async fn import_macros(app: tauri::AppHandle) -> Result<Vec<Macro>, String> {
     crate::macro_io::import_via_dialog(&app)
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DirNode {
+    pub name: String,
+    pub path: String,
+    pub has_children: bool,
+}
+
+/// 即子フォルダのうち最初の 1 件を見つけたら true。権限エラーは false 扱い。
+fn has_subdir(path: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+        }
+        return true;
+    }
+    false
+}
+
+#[cfg(windows)]
+fn tree_roots() -> Vec<DirNode> {
+    let mut roots = Vec::new();
+    for letter in b'A'..=b'Z' {
+        let drive = format!("{}:\\", letter as char);
+        if Path::new(&drive).is_dir() {
+            roots.push(DirNode {
+                name: drive.clone(),
+                path: drive.clone(),
+                has_children: has_subdir(Path::new(&drive)),
+            });
+        }
+    }
+    roots
+}
+
+#[cfg(unix)]
+fn tree_roots() -> Vec<DirNode> {
+    let Some(home_os) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let home = PathBuf::from(&home_os);
+    if !home.is_dir() {
+        return Vec::new();
+    }
+    let name = home
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Home".to_string());
+    vec![DirNode {
+        name,
+        path: home.to_string_lossy().into_owned(),
+        has_children: has_subdir(&home),
+    }]
+}
+
+/// `path` 直下のサブフォルダを列挙する。`path` が None ならルート（Windows: ドライブ
+/// 一覧 / macOS・Linux: $HOME 1 件）を返す。Unix 系では `.` 始まりの隠しフォルダを除外。
+#[tauri::command]
+pub fn list_folder_tree(path: Option<String>) -> Result<Vec<DirNode>, String> {
+    let Some(path) = path else {
+        return Ok(tree_roots());
+    };
+    let p = Path::new(&path);
+    if !p.is_dir() {
+        return Err(format!("フォルダが存在しません: {}", path));
+    }
+    let entries = std::fs::read_dir(p).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        #[cfg(unix)]
+        if name.starts_with('.') {
+            continue;
+        }
+        let child_path = entry.path();
+        out.push(DirNode {
+            name,
+            path: child_path.to_string_lossy().into_owned(),
+            has_children: has_subdir(&child_path),
+        });
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}

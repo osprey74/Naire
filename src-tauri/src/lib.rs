@@ -7,6 +7,7 @@ mod rename;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             commands::list_entries,
@@ -18,6 +19,7 @@ pub fn run() {
             commands::undo_rename,
             commands::export_macros,
             commands::import_macros,
+            commands::list_folder_tree,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

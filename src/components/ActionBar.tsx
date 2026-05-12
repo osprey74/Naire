@@ -31,7 +31,7 @@ export default function ActionBar(props: ActionBarProps) {
         元に戻す{undoCount > 0 ? ` (${undoCount})` : ""} <span className={styles.kbd}>Ctrl+Z</span>
       </button>
       <button type="button" className={styles.button} onClick={onClear}>
-        クリア
+        再読み込み
       </button>
     </div>
   );

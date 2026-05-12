@@ -8,6 +8,10 @@
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://www.flaticon.com/*" }]
+    },
     "store:default",
     "store:allow-get",
     "store:allow-set",

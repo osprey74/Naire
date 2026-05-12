@@ -10,6 +10,7 @@ import ModePanel, {
 } from "./components/ModePanel/ModePanel";
 import SequencePanel from "./components/SequencePanel";
 import MacroEditor from "./components/ModePanel/macro/MacroEditor";
+import AboutDialog from "./components/AboutDialog";
 import { usePreview } from "./hooks/usePreview";
 import { persistConfig, useLoadConfig } from "./hooks/useConfig";
 import { pushHistory } from "./components/FilterCombo";
@@ -75,6 +76,7 @@ export default function App() {
   const [macroStepIndex, setMacroStepIndex] = useState(0);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [executing, setExecuting] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   // UNDO スタック。スタック単位は execute_rename 1 回分の RenameRecord。
   // 最大 20 件保持し、超えた分は古いものから捨てる（HANDOFF 仕様）。永続化しない。
   const [undoStack, setUndoStack] = useState<RenameRecord[]>([]);
@@ -522,6 +524,7 @@ export default function App() {
         onFilterCommit={(v) =>
           setFilterHistory((prev) => pushHistory(prev, v))
         }
+        onAboutClick={() => setAboutOpen(true)}
       />
 
       <div className={styles.main}>
@@ -591,6 +594,8 @@ export default function App() {
         />
       )}
 
+      {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+
       {notice && (
         <div
           className={
@@ -614,10 +619,7 @@ export default function App() {
         undoCount={undoStack.length}
         onRename={onRename}
         onUndo={onUndo}
-        onClear={() => {
-          setSelectedPaths(new Set());
-          preview.reload();
-        }}
+        onClear={() => preview.reload()}
       />
     </div>
   );
