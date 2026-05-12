@@ -19,9 +19,9 @@
 | 10 | 文字変換モード | 完了 |
 | 11 | マクロシステム | 完了 |
 | 12 | マクロ JSON 入出力 | 完了 |
-| 13 | 設定永続化 | 未着手 |
+| 13 | 設定永続化 | 完了 |
 
-完了フェーズ: 12 / 13
+完了フェーズ: 13 / 13 🎉
 
 ---
 
@@ -333,6 +333,41 @@ HANDOFF 仕様の単一マクロ JSON 例:
 > 仕様メモ:
 > - キャンセル時の判定はメッセージ内容（「キャンセルされました」）でやっており、I18N 対応時に見直し必要
 > - 既存のマクロと同名でもインポートできる（id が違うので別物扱い）
+
+## Phase 13 — 設定永続化
+
+### フロントエンド
+- [x] `hooks/useConfig.ts`:
+  - `useLoadConfig()`: アプリ起動時に `Store.load('config.json')` で 1 回だけ読み込み、`{ loaded, initialConfig }` を返す
+  - `persistConfig(cfg)`: ストアへ書き込み + `save()` でディスク永続化
+  - Store インスタンスはモジュール内で 1 つに固定（再 load 防止）
+- [x] `App.tsx`:
+  - `useLoadConfig` の結果から起動時に各 state を復元（`configApplied` フラグで上書き保存を防止）
+  - 関連 state が変わるたびに 500ms debounce で `persistConfig` 呼び出し
+  - 永続化対象: `last_folder` / `last_mode` / `last_target` / `recursive` / `depth` / `filter` / `filter_history` / `seq` / `macros`
+
+### 永続化対象（AppConfig）
+| フィールド | 内容 | 反映タイミング |
+|---|---|---|
+| `last_folder` | 直近のフォルダパス | フォルダ変更 |
+| `last_mode` | 直近のモード（builtin / advanced / macro） | モード切替 |
+| `last_target` | ファイル / フォルダ | ターゲット切替 |
+| `recursive` / `depth` | 再帰設定 | 変更時 |
+| `filter` / `filter_history` | フィルタ + 履歴（最大 10 件） | フィルタ確定時 |
+| `seq` | 連番カウンタ設定 | 変更時 |
+| `macros` | マクロ一覧 | 保存・削除・インポート時 |
+
+### 永続化しないもの（HANDOFF 仕様 or 設計判断）
+- UNDO スタック（HANDOFF 仕様）
+- 部分選択状態（transient UI）
+- regex/wildcard/char_convert/builtin の入力中の値（transient UI）
+- 編集中マクロ（保存時に macros 配列へ反映されるのでそこで永続化）
+- マクロ実行状態（macroItems / macroStepIndex — transient）
+
+### 既知の制限
+- **ウィンドウ状態（サイズ・位置）は placeholder のみ保存**。restore 処理は未実装。`tauri-plugin-window-state` を導入するか、Tauri Window API で個別実装するかは将来検討
+- 設定読み込み失敗時はサイレントにデフォルトへフォールバック（コンソールエラーのみ）
+- 設定ファイルパス: Tauri が標準で割り振る `appData` 配下に `config.json`
 
 ## Phase 3 以降
 

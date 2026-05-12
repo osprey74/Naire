@@ -11,12 +11,14 @@ import ModePanel, {
 import SequencePanel from "./components/SequencePanel";
 import MacroEditor from "./components/ModePanel/macro/MacroEditor";
 import { usePreview } from "./hooks/usePreview";
+import { persistConfig, useLoadConfig } from "./hooks/useConfig";
 import { pushHistory } from "./components/FilterCombo";
 import {
   initialOp,
   type BuiltinKind,
 } from "./components/ModePanel/builtin/builtin-defaults";
 import type {
+  AppConfig,
   BuiltinOp,
   Macro,
   PreviewItem,
@@ -38,6 +40,7 @@ const DEFAULT_SEQ: SequenceConfig = {
 type Notice = { kind: "success" | "error"; message: string };
 
 export default function App() {
+  const { loaded: configLoaded, initialConfig } = useLoadConfig();
   const [folder, setFolder] = useState<string>("");
   const [target, setTarget] = useState<TargetType>("file");
   const [recursive, setRecursive] = useState(false);
@@ -237,6 +240,60 @@ export default function App() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  // ── 設定の永続化 ──────────────────────────────────────────
+  // 起動時に 1 回だけ initialConfig を state へ反映する。
+  // 適用が完了するまで debounce 保存はスキップ（ロードした値を上書きで保存しない）。
+  const [configApplied, setConfigApplied] = useState(false);
+  useEffect(() => {
+    if (!configLoaded) return;
+    if (initialConfig) {
+      if (initialConfig.last_folder) setFolder(initialConfig.last_folder);
+      if (initialConfig.last_mode) setMode(initialConfig.last_mode);
+      if (initialConfig.last_target) setTarget(initialConfig.last_target);
+      if (typeof initialConfig.recursive === "boolean")
+        setRecursive(initialConfig.recursive);
+      if (typeof initialConfig.depth === "number") setDepth(initialConfig.depth);
+      if (initialConfig.filter) setFilter(initialConfig.filter);
+      if (Array.isArray(initialConfig.filter_history))
+        setFilterHistory(initialConfig.filter_history);
+      if (initialConfig.seq) setSeq(initialConfig.seq);
+      if (Array.isArray(initialConfig.macros)) setMacros(initialConfig.macros);
+    }
+    setConfigApplied(true);
+  }, [configLoaded, initialConfig]);
+
+  // 関連 state が変わるたびに debounced で保存。configApplied が true になるまでは
+  // 走らせない（起動直後にデフォルト値を上書き保存しないため）。
+  useEffect(() => {
+    if (!configApplied) return;
+    const cfg: AppConfig = {
+      last_folder: folder,
+      last_mode: mode,
+      last_target: target,
+      recursive,
+      depth,
+      filter,
+      filter_history: filterHistory,
+      seq,
+      // window state は将来対応（Phase 13 では placeholder）
+      window: { width: 1100, height: 720 },
+      macros,
+    };
+    const t = setTimeout(() => persistConfig(cfg), 500);
+    return () => clearTimeout(t);
+  }, [
+    configApplied,
+    folder,
+    mode,
+    target,
+    recursive,
+    depth,
+    filter,
+    filterHistory,
+    seq,
+    macros,
+  ]);
 
   // ── マクロハンドラ ──────────────────────────────────────────
   // フォルダ/フィルタ条件が変わったらマクロ実行状態をリセット。
