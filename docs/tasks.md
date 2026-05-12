@@ -17,11 +17,11 @@
 | 8 | 定型実装（22 variants） | 完了 |
 | 9 | ワイルドカードモード | 完了 |
 | 10 | 文字変換モード | 完了 |
-| 11 | マクロシステム | 未着手 |
+| 11 | マクロシステム | 完了 |
 | 12 | マクロ JSON 入出力 | 未着手 |
 | 13 | 設定永続化 | 未着手 |
 
-完了フェーズ: 10 / 13
+完了フェーズ: 11 / 13
 
 ---
 
@@ -240,6 +240,58 @@
 > - HANDOFF の TS 型 `{ kind: "char_convert"; from: string; to: string }` に準拠
 > - 範囲記法と列挙の混在は不可（カンマがあれば列挙、無ければ範囲。シンプルな分岐）
 > - 後続フェーズ用途: 漢数字 → アラビア数字、ローマ数字 → アラビア数字、全角 → 半角 など
+
+## Phase 11 — マクロシステム
+
+### バックエンド
+- [x] `FileContext` リファクタ: `stem` / `extension` フィールドを削除し、`expand_template` で `current` 引数から派生する形へ
+- [x] `expand_template(template, caps, ctx, current)`: シグネチャに `current: &str` を追加
+  - `\0 \t \e` は **`current` から派生**（マクロ各ステップの直前出力を参照）
+  - `\orig` (5 文字消費) を実装: マクロ開始時点の元名 = `ctx.original_full`
+  - 非マクロ単一ステップでは `current == ctx.original_full` のため `\0` と `\orig` は同じ結果
+- [x] `commands.rs::init_macro_items`: 列挙して `StepItem` 群を返す（`original_name == current_name`、metadata から size/mtime）
+- [x] `commands.rs::apply_macro_step`: 単一ステップを items 全体に適用
+  - 部分選択時は選択行のみ適用、非選択行は `current_name` 維持
+  - `FileContext.original_full = item.original_name` で `\orig` を step 0 名にバインド
+  - `current = item.current_name` で `\0 \t \e` を直前ステップ出力に対応付け
+  - 連番カウンタとフォルダリセットの挙動は `build_preview` と同じ
+- [x] `commands.rs::apply_rename_to_filesystem`: 確定済み (path, new_name) をディスクへ反映
+  - `execute_rename` と同じ検証（バッチ内重複・チェーン・既存衝突）
+  - `RenameRecord` を返却して UNDO スタックに積める
+- [x] テスト: `\orig` マクロ変数の動作確認テストを追加 → 計 68 件 PASS
+
+### フロントエンド
+- [x] `ModePanel/macro/step-defaults.ts`: `initialStep(kind)` / `describeStep(step)`
+- [x] `ModePanel/macro/StepRow.tsx`: 1 ステップ編集行
+  - kind selector（定型 / 正規表現 / ワイルドカード / 文字変換）
+  - 種別別フォーム（regex/wildcard/char_convert はインラインで実装、builtin は既存の `BuiltinMenu` + `BuiltinParams` を再利用）
+  - 削除ボタン + 上下移動ボタン
+- [x] `ModePanel/macro/MacroEditor.tsx`: モーダル
+  - マクロ名入力 + ステップリスト + 追加ボタン (4 種類)
+  - 保存 / キャンセル / 削除
+  - 背景クリックで閉じる
+- [x] `ModePanel/macro/MacroPanel.tsx`: マクロモードのメイン UI
+  - マクロ選択ドロップダウン（進行中はロック）
+  - [新規] [編集] ボタン
+  - ステップ進行表示: N / 全体
+  - 次のステップ概要表示
+  - [◀戻す] [ステップ処理▶] [すべて適用]
+- [x] `App.tsx`:
+  - `macros: Macro[]` / `currentMacroId` / `editingMacro` / `macroItems: StepItem[]` / `macroStepIndex`
+  - `initMacroItems` / `applyOneStep` ヘルパー
+  - `onMacroStepForward` / `onMacroApplyAll` / `onMacroReset` / `onMacroCreateNew` / `onMacroEdit` ハンドラ
+  - フォルダ/フィルタ/モード変更時にマクロ実行状態を自動リセット
+  - マクロモード中の `onRename` は `apply_rename_to_filesystem` を呼ぶ
+  - マクロモード中の PreviewPanel は `macroItems` を `PreviewItem` に変換して表示
+  - 成功時に UNDO スタックへ push（既存と統合）
+
+### 仕様メモ
+- `\orig` は `\o` + `rig` の 5 文字エスケープ。expand_template で先頭一致でチェック
+- マクロ進行中（step_index > 0）はマクロ選択ドロップダウンをロック
+- [すべて適用] は残りステップを順次 invoke。失敗したらそこで停止
+- マクロステップの reorder は dnd-kit ではなく **上下ボタン**で実装（シンプル化）。dnd-kit への移行は将来検討
+- **永続化はまだしていない**（Phase 13 で `tauri-plugin-store` に保存）。アプリ再起動でマクロは消える
+- **JSON インポート／エクスポートは Phase 12** で実装
 
 ## Phase 3 以降
 

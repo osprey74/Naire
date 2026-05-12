@@ -1,0 +1,117 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.selectorRow {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.select {
+  flex: 1;
+  padding: 0.3rem 0.4rem;
+  font-size: 12px;
+  border: 1px solid #b0bec5;
+  border-radius: 3px;
+  background: #fff;
+  outline: none;
+  min-width: 0;
+}
+
+.select:focus {
+  border-color: #1976d2;
+}
+
+.select:disabled {
+  background: #eceff1;
+  color: #607d8b;
+}
+
+.btn {
+  padding: 0.3rem 0.6rem;
+  font-size: 11px;
+  border: 1px solid #b0bec5;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background: #eceff1;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.progress {
+  font-size: 12px;
+  color: #455a64;
+  padding: 0.3rem 0;
+}
+
+.currentStep {
+  font-size: 11px;
+  color: #455a64;
+  background: #fafafa;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+  word-break: break-all;
+}
+
+.currentStep code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  color: #1976d2;
+}
+
+.controlsRow {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.controlBtn {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  font-size: 12px;
+  border: 1px solid #b0bec5;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.controlBtn:hover:not(:disabled) {
+  background: #eceff1;
+}
+
+.controlBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.controlBtn.primary {
+  background: #1976d2;
+  color: #fff;
+  border-color: #1565c0;
+}
+
+.controlBtn.primary:hover:not(:disabled) {
+  background: #1565c0;
+}
+
+.placeholder {
+  padding: 1rem;
+  color: #9e9e9e;
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+  border: 1px dashed #cfd8dc;
+  border-radius: 3px;
+}

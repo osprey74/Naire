@@ -355,7 +355,7 @@ pub fn apply_builtin(op: &BuiltinOp, current: &str, ctx: &FileContext) -> String
         }
         AddDatetime { format, position } => {
             // `format` は Naire の `\Y\m\d` 系テンプレートとして展開される。
-            let formatted = expand_template(format, None, ctx);
+            let formatted = expand_template(format, None, ctx, current);
             match position {
                 Position::Prefix => format!("{}{}", formatted, current),
                 Position::Suffix => {

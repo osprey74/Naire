@@ -431,32 +431,196 @@ pub async fn execute_rename(
     })
 }
 
+/// マクロ実行の初期化: フォルダ列挙して `StepItem` 群を返す。
+/// `original_name == current_name`、size / mtime は metadata から取得。
 #[tauri::command]
 pub async fn init_macro_items(
-    _folder: String,
-    _target: TargetType,
-    _recursive: bool,
-    _depth: u32,
-    _filter: String,
+    folder: String,
+    target: TargetType,
+    recursive: bool,
+    depth: u32,
+    filter: String,
 ) -> Result<Vec<StepItem>, String> {
-    Err("not implemented".into())
+    let entries = enumerate_entries(&folder, &target, recursive, depth, &filter)?;
+    let items: Vec<StepItem> = entries
+        .into_iter()
+        .map(|e| {
+            let path = PathBuf::from(&e.path);
+            let (size, mtime) = std::fs::metadata(&path)
+                .map(|meta| {
+                    let size = meta.len();
+                    let mtime = meta
+                        .modified()
+                        .map(|t| chrono::DateTime::<chrono::Local>::from(t).to_rfc3339())
+                        .unwrap_or_default();
+                    (size, mtime)
+                })
+                .unwrap_or((0, String::new()));
+            StepItem {
+                path: e.path,
+                original_name: e.original.clone(),
+                current_name: e.original,
+                folder: e.folder,
+                size,
+                mtime,
+            }
+        })
+        .collect();
+    Ok(items)
 }
 
+/// 1 ステップを items 全体に適用して、各 item の新しい `current_name` を返す。
+/// 選択行のみに適用し、非選択行は元の `current_name` を維持する。
+/// 連番カウンタとフォルダリセットの挙動は `build_preview` と同じ。
+///
+/// **マクロコンテキスト**: `FileContext.original_full` は `item.original_name` で
+/// 上書きし、`\orig` 変数を step 0 名にバインドする。`\0 \t \e` は `current` 引数
+/// （= 直前ステップ適用後の名前）から導出される。
 #[tauri::command]
 pub async fn apply_macro_step(
-    _items: Vec<StepItem>,
-    _step: RenameStepDto,
-    _seq: SequenceConfigDto,
-    _selected_indexes: Vec<usize>,
+    items: Vec<StepItem>,
+    step: RenameStepDto,
+    seq: SequenceConfigDto,
+    selected_indexes: Vec<usize>,
 ) -> Result<Vec<String>, String> {
-    Err("not implemented".into())
+    let compiled = compile_steps(std::slice::from_ref(&step))?;
+    if compiled.is_empty() {
+        return Ok(items.into_iter().map(|i| i.current_name).collect());
+    }
+
+    let apply_to_all = selected_indexes.is_empty() || selected_indexes.len() == items.len();
+    let selected: HashSet<usize> = if apply_to_all {
+        HashSet::new()
+    } else {
+        selected_indexes.iter().copied().collect()
+    };
+
+    let numbering = Numbering::parse(&seq.numbering);
+    let step_size = seq.step.max(1);
+    let mut counter = seq.start;
+    let mut applied_index: u64 = 0;
+    let mut last_folder: Option<String> = None;
+
+    let mut new_names = Vec::with_capacity(items.len());
+    for (idx, item) in items.iter().enumerate() {
+        if !apply_to_all && !selected.contains(&idx) {
+            new_names.push(item.current_name.clone());
+            continue;
+        }
+
+        if seq.reset_per_folder {
+            match &last_folder {
+                Some(prev) if prev == &item.folder => {}
+                _ => {
+                    counter = seq.start;
+                    applied_index = 0;
+                }
+            }
+        }
+
+        let path = PathBuf::from(&item.path);
+        let mut ctx = FileContext::from_path(&path);
+        // マクロセマンティクス: \orig は step 0 名を指す
+        ctx.original_full = item.original_name.clone();
+        ctx.seq_value = counter;
+        ctx.seq_numbering = numbering;
+        ctx.applied_index = applied_index;
+
+        if let Ok(meta) = std::fs::metadata(&path) {
+            ctx.size = meta.len();
+            if let Ok(modified) = meta.modified() {
+                ctx.mtime = chrono::DateTime::<chrono::Local>::from(modified);
+            }
+        }
+
+        let mut current = item.current_name.clone();
+        for s in &compiled {
+            current = s.apply(&current, &ctx);
+        }
+        new_names.push(current);
+
+        last_folder = Some(item.folder.clone());
+        counter = counter.saturating_add(step_size);
+        applied_index = applied_index.saturating_add(1);
+    }
+
+    Ok(new_names)
 }
 
+/// 確定済みの (path, new_name) 配列をディスクに反映する。
+/// execute_rename と同様にバッチ内重複・チェーン・既存衝突を検証してから
+/// `std::fs::rename` を順次実行し、`RenameRecord` を返す。
 #[tauri::command]
 pub async fn apply_rename_to_filesystem(
-    _items: Vec<RenameItemDto>,
+    items: Vec<RenameItemDto>,
 ) -> Result<RenameRecord, String> {
-    Err("not implemented".into())
+    // 変更のあるエントリのみ抽出
+    let mut planned: Vec<(String, String)> = Vec::new();
+    let mut targets: HashMap<String, String> = HashMap::new();
+    for item in &items {
+        let old_path = PathBuf::from(&item.path);
+        let current_name = old_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if item.new_name == current_name {
+            continue; // 変更なし
+        }
+        let new_path = old_path.with_file_name(&item.new_name);
+        let new_path_str = new_path.to_string_lossy().into_owned();
+        if let Some(existing) = targets.insert(new_path_str.clone(), item.path.clone()) {
+            return Err(format!(
+                "コンフリクト: {} と {} が同じ名前 {} にリネームされます",
+                existing, item.path, new_path_str
+            ));
+        }
+        planned.push((item.path.clone(), new_path_str));
+    }
+
+    if planned.is_empty() {
+        return Err("変更対象がありません".into());
+    }
+
+    let old_paths: HashSet<&String> = planned.iter().map(|(o, _)| o).collect();
+    for (old_path, new_path) in &planned {
+        if old_path != new_path && old_paths.contains(new_path) {
+            return Err(format!(
+                "リネーム順序の循環があります: {} → {}（バッチ分割が必要）",
+                old_path, new_path
+            ));
+        }
+    }
+    for (old_path, new_path) in &planned {
+        if old_path == new_path {
+            continue;
+        }
+        if Path::new(new_path).exists() {
+            return Err(format!("既に存在するファイル: {}", new_path));
+        }
+    }
+
+    let mut ops = Vec::with_capacity(planned.len());
+    for (old_path, new_path) in planned {
+        std::fs::rename(&old_path, &new_path).map_err(|e| {
+            format!(
+                "リネーム失敗 {} → {}: {} （これまでに {} 件成功）",
+                old_path,
+                new_path,
+                e,
+                ops.len()
+            )
+        })?;
+        ops.push(RenameOp {
+            old_path,
+            new_path,
+        });
+    }
+
+    Ok(RenameRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Local::now().to_rfc3339(),
+        ops,
+    })
 }
 
 /// `RenameRecord` を逆適用する。実装は `rename/undo.rs::undo_ops` を参照。

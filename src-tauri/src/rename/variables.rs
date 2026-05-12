@@ -4,12 +4,17 @@ use chrono::{DateTime, Datelike, Local, Timelike};
 
 use crate::rename::sequence::{format_seq, Numbering};
 
-/// 1 ファイルに対するリネームで参照される静的コンテキスト。
-/// 置換テンプレート内の `\0 \t \e \f \F \Y \m \d ?` などを解決するためにステップ前に構築する。
+/// 1 ファイルに対するリネームで参照されるコンテキスト。
+///
+/// **重要**: `original_full` は「マクロ開始時点」または「ステップ非進行時の元名」を
+/// 保持する。非マクロ単一ステップでは `current_name == original_full` となるが、
+/// マクロのステップ処理では `current` 引数が各ステップで変化する一方、
+/// `original_full` は変わらない（`\orig` 変数で参照される）。
+///
+/// `\0 \t \e` は **`current` 引数**から導出し、`\orig` のみ `original_full` を参照する。
 pub struct FileContext {
+    /// マクロ開始時の元ファイル名（拡張子含む）。`\orig` で参照。
     pub original_full: String,
-    pub stem: String,
-    pub extension: String,
     pub folder_name: String,
     pub parent_folder_name: String,
     pub size: u64,
@@ -29,14 +34,6 @@ impl FileContext {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let stem = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let extension = path
-            .extension()
-            .map(|s| format!(".{}", s.to_string_lossy()))
-            .unwrap_or_default();
         let folder_name = path
             .parent()
             .and_then(|p| p.file_name())
@@ -50,8 +47,6 @@ impl FileContext {
             .unwrap_or_default();
         Self {
             original_full,
-            stem,
-            extension,
             folder_name,
             parent_folder_name,
             size: 0,
@@ -60,6 +55,14 @@ impl FileContext {
             seq_numbering: Numbering::Decimal,
             applied_index: 0,
         }
+    }
+}
+
+/// 現在の名前を stem / extension に分解する（最後の `.` で分割）。
+fn split_stem_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(i) => (&name[..i], &name[i..]),
+        None => (name, ""),
     }
 }
 
@@ -137,6 +140,7 @@ pub fn expand_template(
     template: &str,
     caps: Option<&regex::Captures>,
     ctx: &FileContext,
+    current: &str,
 ) -> String {
     let chars: Vec<char> = template.chars().collect();
     let mut out = String::with_capacity(template.len());
@@ -146,6 +150,18 @@ pub fn expand_template(
         let c = chars[i];
         if c == '\\' && i + 1 < chars.len() {
             let nxt = chars[i + 1];
+
+            // `\orig` (5 文字消費): マクロ開始時点の元ファイル名。
+            // 非マクロ単一ステップでは `current == ctx.original_full` のため
+            // `\0` と同じ結果になる。
+            if nxt == 'o'
+                && chars.get(i + 2..i + 5) == Some(&['r', 'i', 'g'])
+            {
+                out.push_str(&ctx.original_full);
+                i += 5;
+                continue;
+            }
+
             // `\#X` (3 文字消費): 次の日時変数の先行ゼロを除去
             if nxt == '#' && i + 2 < chars.len() {
                 if let Some(v) = format_date_var(chars[i + 2], ctx, true) {
@@ -153,7 +169,6 @@ pub fn expand_template(
                     i += 3;
                     continue;
                 }
-                // 日時変数でなければ `\#` をリテラル出力
                 out.push('\\');
                 out.push('#');
                 i += 2;
@@ -162,9 +177,15 @@ pub fn expand_template(
             match nxt {
                 '\\' => out.push('\\'),
                 '?' => out.push('?'),
-                '0' => out.push_str(&ctx.original_full),
-                't' => out.push_str(&ctx.stem),
-                'e' => out.push_str(&ctx.extension),
+                '0' => out.push_str(current),
+                't' => {
+                    let (stem, _) = split_stem_ext(current);
+                    out.push_str(stem);
+                }
+                'e' => {
+                    let (_, ext) = split_stem_ext(current);
+                    out.push_str(ext);
+                }
                 'f' => out.push_str(&ctx.folder_name),
                 'F' => out.push_str(&ctx.parent_folder_name),
                 ';' => out.push_str(&format_size_with_sep(ctx.size)),
@@ -229,8 +250,6 @@ mod tests {
     fn file_context_basic() {
         let c = ctx("/root/parent/folder/file.txt");
         assert_eq!(c.original_full, "file.txt");
-        assert_eq!(c.stem, "file");
-        assert_eq!(c.extension, ".txt");
         assert_eq!(c.folder_name, "folder");
         assert_eq!(c.parent_folder_name, "parent");
     }
@@ -240,7 +259,10 @@ mod tests {
         let re = regex::Regex::new(r"^(\w+)_(\d+)$").unwrap();
         let caps = dummy_caps(&re, "abc_123");
         let c = ctx("/x/folder/file.txt");
-        assert_eq!(expand_template(r"\2-\1", Some(&caps), &c), "123-abc");
+        assert_eq!(
+            expand_template(r"\2-\1", Some(&caps), &c, "file.txt"),
+            "123-abc"
+        );
     }
 
     #[test]
@@ -249,7 +271,7 @@ mod tests {
         let caps = dummy_caps(&re, "file.txt");
         let c = ctx("/x/folder/file.txt");
         assert_eq!(
-            expand_template(r"\f_\t\e", Some(&caps), &c),
+            expand_template(r"\f_\t\e", Some(&caps), &c, "file.txt"),
             "folder_file.txt"
         );
     }
@@ -257,18 +279,19 @@ mod tests {
     #[test]
     fn template_no_captures() {
         let c = ctx("/x/folder/file.txt");
-        // caps=None でも file 変数は展開可能
-        assert_eq!(expand_template(r"\f_\t\e", None, &c), "folder_file.txt");
-        // \1 は何も出ない
-        assert_eq!(expand_template(r"\1", None, &c), "");
+        assert_eq!(
+            expand_template(r"\f_\t\e", None, &c, "file.txt"),
+            "folder_file.txt"
+        );
+        assert_eq!(expand_template(r"\1", None, &c, "file.txt"), "");
     }
 
     #[test]
     fn template_size_vars() {
         let mut c = ctx("/x/folder/file.txt");
         c.size = 1_234_567;
-        assert_eq!(expand_template(r"\;", None, &c), "1,234,567");
-        assert_eq!(expand_template(r"\:", None, &c), "1234567");
+        assert_eq!(expand_template(r"\;", None, &c, "file.txt"), "1,234,567");
+        assert_eq!(expand_template(r"\:", None, &c, "file.txt"), "1234567");
     }
 
     #[test]
@@ -276,22 +299,21 @@ mod tests {
         let dt = Local.with_ymd_and_hms(2026, 5, 12, 9, 8, 7).unwrap();
         let c = ctx_with_dt("/x/folder/file.txt", dt);
         assert_eq!(
-            expand_template(r"\Y\m\d_\H\M\S", None, &c),
+            expand_template(r"\Y\m\d_\H\M\S", None, &c, "file.txt"),
             "20260512_090807"
         );
-        assert_eq!(expand_template(r"\y", None, &c), "26");
-        assert_eq!(expand_template(r"\I", None, &c), "09");
+        assert_eq!(expand_template(r"\y", None, &c, "file.txt"), "26");
+        assert_eq!(expand_template(r"\I", None, &c, "file.txt"), "09");
     }
 
     #[test]
     fn template_strip_zero_modifier() {
         let dt = Local.with_ymd_and_hms(2026, 5, 7, 0, 5, 0).unwrap();
         let c = ctx_with_dt("/x/file.txt", dt);
-        assert_eq!(expand_template(r"\#m", None, &c), "5");
-        assert_eq!(expand_template(r"\#d", None, &c), "7");
-        assert_eq!(expand_template(r"\#H", None, &c), "0");
-        // 修飾子は次の 1 個だけに作用（後続の \d はゼロ埋めのまま）
-        assert_eq!(expand_template(r"\#m\d", None, &c), "507");
+        assert_eq!(expand_template(r"\#m", None, &c, "file.txt"), "5");
+        assert_eq!(expand_template(r"\#d", None, &c, "file.txt"), "7");
+        assert_eq!(expand_template(r"\#H", None, &c, "file.txt"), "0");
+        assert_eq!(expand_template(r"\#m\d", None, &c, "file.txt"), "507");
     }
 
     #[test]
@@ -299,14 +321,19 @@ mod tests {
         let re = regex::Regex::new(r".*").unwrap();
         let caps = dummy_caps(&re, "file.txt");
         let c = ctx("/x/folder/file.txt");
-        assert_eq!(expand_template(r"\\foo", Some(&caps), &c), r"\foo");
+        assert_eq!(
+            expand_template(r"\\foo", Some(&caps), &c, "file.txt"),
+            r"\foo"
+        );
     }
 
     #[test]
     fn unknown_escape_preserved() {
         let c = ctx("/x/folder/file.txt");
-        // \p \a \A \b \B \u \U \l \L \E は Phase 8 では未対応
-        assert_eq!(expand_template(r"\p_\t", None, &c), r"\p_file");
+        assert_eq!(
+            expand_template(r"\p_\t", None, &c, "file.txt"),
+            r"\p_file"
+        );
     }
 
     #[test]
@@ -314,9 +341,12 @@ mod tests {
         let mut c = ctx("/x/folder/file.txt");
         c.seq_value = 7;
         c.seq_numbering = Numbering::Decimal;
-        assert_eq!(expand_template("img_???", None, &c), "img_007");
-        assert_eq!(expand_template("?", None, &c), "7");
-        assert_eq!(expand_template("????", None, &c), "0007");
+        assert_eq!(
+            expand_template("img_???", None, &c, "file.txt"),
+            "img_007"
+        );
+        assert_eq!(expand_template("?", None, &c, "file.txt"), "7");
+        assert_eq!(expand_template("????", None, &c, "file.txt"), "0007");
     }
 
     #[test]
@@ -324,7 +354,7 @@ mod tests {
         let mut c = ctx("/x/folder/file.txt");
         c.seq_value = 255;
         c.seq_numbering = Numbering::Hex;
-        assert_eq!(expand_template("??", None, &c), "FF");
+        assert_eq!(expand_template("??", None, &c, "file.txt"), "FF");
     }
 
     #[test]
@@ -333,21 +363,44 @@ mod tests {
         let mut c = ctx("/x/folder/file.txt");
         c.seq_value = 26;
         c.seq_numbering = Numbering::Alpha;
-        assert_eq!(expand_template("??", None, &c), "AA");
+        assert_eq!(expand_template("??", None, &c, "file.txt"), "AA");
         c.seq_value = 0;
-        assert_eq!(expand_template("?", None, &c), "A");
+        assert_eq!(expand_template("?", None, &c, "file.txt"), "A");
     }
 
     #[test]
     fn template_literal_question_mark() {
         let c = ctx("/x/folder/file.txt");
-        assert_eq!(expand_template(r"foo\?bar", None, &c), "foo?bar");
+        assert_eq!(
+            expand_template(r"foo\?bar", None, &c, "file.txt"),
+            "foo?bar"
+        );
     }
 
     #[test]
     fn template_consecutive_questions_capped_at_4() {
         let mut c = ctx("/x/folder/file.txt");
         c.seq_value = 5;
-        assert_eq!(expand_template("?????", None, &c), "00055");
+        assert_eq!(expand_template("?????", None, &c, "file.txt"), "00055");
+    }
+
+    #[test]
+    fn template_orig_macro_variable() {
+        // マクロ context: original_full は step 0 名、current は現在ステップ入力
+        let mut c = ctx("/x/folder/original.txt");
+        c.original_full = "original.txt".into();
+        // 現在ステップでの \0 と \t \e は current から
+        assert_eq!(
+            expand_template(r"\orig", None, &c, "current_v3.md"),
+            "original.txt"
+        );
+        assert_eq!(expand_template(r"\0", None, &c, "current_v3.md"), "current_v3.md");
+        assert_eq!(expand_template(r"\t", None, &c, "current_v3.md"), "current_v3");
+        assert_eq!(expand_template(r"\e", None, &c, "current_v3.md"), ".md");
+        // \orig + \1 \orig 連結ユースケース
+        assert_eq!(
+            expand_template(r"prefix \orig suffix", None, &c, "x"),
+            "prefix original.txt suffix"
+        );
     }
 }

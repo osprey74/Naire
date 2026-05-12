@@ -5,7 +5,7 @@ use crate::rename::variables::{expand_template, FileContext};
 /// 単一の名前に正規表現ステップを適用する。マッチしなければ入力をそのまま返す。
 pub fn apply_regex(re: &Regex, replace_template: &str, current: &str, ctx: &FileContext) -> String {
     re.replace_all(current, |caps: &regex::Captures| {
-        expand_template(replace_template, Some(caps), ctx)
+        expand_template(replace_template, Some(caps), ctx, current)
     })
     .into_owned()
 }

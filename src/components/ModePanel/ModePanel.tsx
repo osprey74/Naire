@@ -4,7 +4,8 @@ import CharConvertMode from "./advanced/CharConvertMode";
 import BuiltinMenu from "./builtin/BuiltinMenu";
 import BuiltinParams from "./builtin/BuiltinParams";
 import type { BuiltinKind } from "./builtin/builtin-defaults";
-import type { BuiltinOp } from "../../types/rename";
+import MacroPanel from "./macro/MacroPanel";
+import type { BuiltinOp, Macro } from "../../types/rename";
 import styles from "./ModePanel.module.css";
 
 type Mode = "builtin" | "advanced" | "macro";
@@ -30,6 +31,16 @@ export interface ModePanelProps {
   builtinOp: BuiltinOp | null;
   onBuiltinKindSelect: (kind: BuiltinKind) => void;
   onBuiltinOpChange: (op: BuiltinOp) => void;
+  macros: Macro[];
+  currentMacroId: string | null;
+  macroStepIndex: number;
+  macroHasItems: boolean;
+  onMacroSelect: (id: string | null) => void;
+  onMacroCreateNew: () => void;
+  onMacroEdit: (id: string) => void;
+  onMacroStepForward: () => void;
+  onMacroApplyAll: () => void;
+  onMacroReset: () => void;
 }
 
 export default function ModePanel(props: ModePanelProps) {
@@ -53,6 +64,16 @@ export default function ModePanel(props: ModePanelProps) {
     builtinOp,
     onBuiltinKindSelect,
     onBuiltinOpChange,
+    macros,
+    currentMacroId,
+    macroStepIndex,
+    macroHasItems,
+    onMacroSelect,
+    onMacroCreateNew,
+    onMacroEdit,
+    onMacroStepForward,
+    onMacroApplyAll,
+    onMacroReset,
   } = props;
 
   return (
@@ -156,9 +177,18 @@ export default function ModePanel(props: ModePanelProps) {
           </div>
         )}
         {mode === "macro" && (
-          <div className={styles.placeholder}>
-            マクロモード（Phase 11 で実装予定）
-          </div>
+          <MacroPanel
+            macros={macros}
+            currentMacroId={currentMacroId}
+            stepIndex={macroStepIndex}
+            hasItems={macroHasItems}
+            onSelect={onMacroSelect}
+            onCreateNew={onMacroCreateNew}
+            onEdit={onMacroEdit}
+            onStepForward={onMacroStepForward}
+            onApplyAll={onMacroApplyAll}
+            onReset={onMacroReset}
+          />
         )}
       </div>
     </div>
