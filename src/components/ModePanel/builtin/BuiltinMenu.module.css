@@ -1,0 +1,66 @@
+.menu {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+}
+
+.category + .category {
+  margin-top: 0.25rem;
+}
+
+.categoryHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0.25rem 0.4rem;
+  border: none;
+  background: #eceff1;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: #455a64;
+}
+
+.categoryHeader:hover {
+  background: #cfd8dc;
+}
+
+.chevron {
+  font-size: 9px;
+  width: 0.8rem;
+  display: inline-block;
+}
+
+.count {
+  margin-left: auto;
+  font-weight: 400;
+  color: #90a4ae;
+  font-size: 10px;
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  padding: 0.1rem 0;
+}
+
+.item {
+  padding: 0.3rem 0.4rem 0.3rem 1.3rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  color: #263238;
+}
+
+.item:hover {
+  background: #e3f2fd;
+}
+
+.item.active {
+  background: #1976d2;
+  color: #fff;
+}

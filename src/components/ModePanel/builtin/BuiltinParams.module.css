@@ -1,0 +1,77 @@
+.params {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #455a64;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.row .field {
+  flex: 1;
+  min-width: 4rem;
+}
+
+.text,
+.select,
+.num {
+  padding: 0.25rem 0.4rem;
+  font-size: 12px;
+  border: 1px solid #b0bec5;
+  border-radius: 3px;
+  background: #fff;
+  outline: none;
+  font-family: inherit;
+}
+
+.text {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+.text:focus,
+.num:focus,
+.select:focus {
+  border-color: #1976d2;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 11px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.hint {
+  font-size: 10px;
+  color: #78909c;
+  line-height: 1.5;
+}
+
+.hint code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  background: #eceff1;
+  padding: 1px 3px;
+  border-radius: 2px;
+}

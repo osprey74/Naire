@@ -1,0 +1,62 @@
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.noticeSuccess,
+.noticeError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.75rem;
+  font-size: 12px;
+  border-top: 1px solid;
+}
+
+.noticeSuccess {
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-top-color: #c8e6c9;
+}
+
+.noticeError {
+  background: #ffebee;
+  color: #c62828;
+  border-top-color: #ffcdd2;
+}
+
+.noticeClose {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: inherit;
+  padding: 0 0.3rem;
+}
+
+.noticeClose:hover {
+  opacity: 0.7;
+}
+
+.main {
+  display: grid;
+  grid-template-columns: 220px 320px 1fr;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.left,
+.center,
+.right {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.center {
+  border-right: 1px solid #e0e0e0;
+}

@@ -1,0 +1,50 @@
+.tree {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0.5rem;
+  background: #fafafa;
+  border-right: 1px solid #e0e0e0;
+  overflow: hidden;
+}
+
+.actions {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.button {
+  padding: 0.3rem 0.5rem;
+  font-size: 12px;
+  border: 1px solid #b0bec5;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: #eceff1;
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.path {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  color: #455a64;
+  word-break: break-all;
+  padding: 0.25rem;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+  max-height: 6rem;
+  overflow-y: auto;
+}
+
+.placeholder {
+  color: #b0bec5;
+}
