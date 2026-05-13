@@ -1,5 +1,7 @@
 use std::path::Path;
+use std::sync::OnceLock;
 
+use chrono::format::Locale;
 use chrono::{DateTime, Datelike, Local, Timelike};
 
 use crate::rename::sequence::{format_seq, Numbering};
@@ -58,6 +60,91 @@ impl FileContext {
     }
 }
 
+/// OS のロケール（BCP 47, 例: `ja-JP`、`en_US.UTF-8`）を chrono の `Locale` に正規化する。
+/// 不一致なら POSIX にフォールバック。初回呼び出しで取得した値を OnceLock でキャッシュ。
+fn current_locale() -> Locale {
+    static CACHED: OnceLock<Locale> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let raw = sys_locale::get_locale().unwrap_or_else(|| "en_US".to_string());
+        let head = raw.split(['.', '@']).next().unwrap_or("en_US");
+        let normalized = head.replace('-', "_");
+        Locale::try_from(normalized.as_str()).unwrap_or(Locale::POSIX)
+    })
+}
+
+/// `\u` `\U` `\l` `\L` `\E` の状態を保持する case 修飾モード。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaseMode {
+    None,
+    /// `\u`: 直後 1 文字を upper にしたら自動的に None に戻る
+    NextUpper,
+    /// `\l`: 直後 1 文字を lower にしたら自動的に None に戻る
+    NextLower,
+    /// `\U` ... `\E`
+    AllUpper,
+    /// `\L` ... `\E`
+    AllLower,
+}
+
+/// 出力アキュムレータ。`push_*` を経由することで case 修飾子を全文字に対して適用する。
+/// 文字単位で適用するため、変数展開や regex キャプチャに対しても自然に効く
+/// （Perl / Boost.Regex の `\u\1` と同様の振る舞い）。
+struct CaseAcc {
+    out: String,
+    mode: CaseMode,
+}
+
+impl CaseAcc {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            out: String::with_capacity(cap),
+            mode: CaseMode::None,
+        }
+    }
+
+    fn push_char(&mut self, c: char) {
+        match self.mode {
+            CaseMode::None => self.out.push(c),
+            CaseMode::NextUpper => {
+                for u in c.to_uppercase() {
+                    self.out.push(u);
+                }
+                self.mode = CaseMode::None;
+            }
+            CaseMode::NextLower => {
+                for u in c.to_lowercase() {
+                    self.out.push(u);
+                }
+                self.mode = CaseMode::None;
+            }
+            CaseMode::AllUpper => {
+                for u in c.to_uppercase() {
+                    self.out.push(u);
+                }
+            }
+            CaseMode::AllLower => {
+                for u in c.to_lowercase() {
+                    self.out.push(u);
+                }
+            }
+        }
+    }
+
+    fn push_str(&mut self, s: &str) {
+        for c in s.chars() {
+            self.push_char(c);
+        }
+    }
+
+    fn set_mode(&mut self, m: CaseMode) {
+        self.mode = m;
+    }
+
+    fn finish(self) -> String {
+        self.out
+    }
+}
+
 /// 現在の名前を stem / extension に分解する（最後の `.` で分割）。
 fn split_stem_ext(name: &str) -> (&str, &str) {
     match name.rfind('.') {
@@ -96,7 +183,8 @@ fn format_dt_value(s: String, strip_zero: bool) -> String {
 }
 
 /// 日時変数 1 文字を `ctx.mtime` から書式化する。未知の letter なら `None`。
-/// `strip_zero=true` で `\#X` 修飾子相当の振る舞いになる。
+/// `strip_zero=true` で `\#X` 修飾子相当の振る舞いになる。ロケール依存変数
+/// (`\a \A \b \B \p`) は `chrono::format_localized` 経由で OS ロケールに従う。
 fn format_date_var(letter: char, ctx: &FileContext, strip_zero: bool) -> Option<String> {
     let raw = match letter {
         'Y' => format!("{:04}", ctx.mtime.year()),
@@ -107,6 +195,11 @@ fn format_date_var(letter: char, ctx: &FileContext, strip_zero: bool) -> Option<
         'I' => format!("{:02}", ctx.mtime.hour12().1),
         'M' => format!("{:02}", ctx.mtime.minute()),
         'S' => format!("{:02}", ctx.mtime.second()),
+        'a' => ctx.mtime.format_localized("%a", current_locale()).to_string(),
+        'A' => ctx.mtime.format_localized("%A", current_locale()).to_string(),
+        'b' => ctx.mtime.format_localized("%b", current_locale()).to_string(),
+        'B' => ctx.mtime.format_localized("%B", current_locale()).to_string(),
+        'p' => ctx.mtime.format_localized("%p", current_locale()).to_string(),
         _ => return None,
     };
     Some(format_dt_value(raw, strip_zero))
@@ -130,12 +223,16 @@ fn format_date_var(letter: char, ctx: &FileContext, strip_zero: bool) -> Option<
 /// - `\m` 月（01-12）/ `\d` 日（01-31）
 /// - `\H` 時（24h, 00-23）/ `\I` 時（12h, 01-12）
 /// - `\M` 分（00-59）/ `\S` 秒（00-59）
+/// - `\a` 曜日省略名 / `\A` 曜日完全名（OS ロケール依存）
+/// - `\b` 月省略名 / `\B` 月完全名（OS ロケール依存）
+/// - `\p` AM/PM 表記（OS ロケール依存）
 /// - `\#X` 次の日時変数の先行ゼロを除去
+/// - `\u` 次の 1 文字を大文字化 / `\l` 次の 1 文字を小文字化
+/// - `\U` ... `\E` で囲まれた範囲を大文字化 / `\L` ... `\E` で小文字化
+/// - `\E` `\U` / `\L` の効果を終了
 /// - `\1`〜`\9` キャプチャグループ（`caps` 指定時のみ）
+/// - `\orig` マクロ開始時点の元ファイル名（マクロ専用）
 /// - `?` `??` `???` `????` 連番（`ctx.seq_value` を `ctx.seq_numbering` で書式化）
-///
-/// ロケール依存変数（`\a \A \b \B \p`）と大文字小文字制御（`\u \U \l \L \E`）は未実装で
-/// リテラル出力する。マクロ専用 `\orig` も Phase 11 で実装。
 pub fn expand_template(
     template: &str,
     caps: Option<&regex::Captures>,
@@ -143,7 +240,7 @@ pub fn expand_template(
     current: &str,
 ) -> String {
     let chars: Vec<char> = template.chars().collect();
-    let mut out = String::with_capacity(template.len());
+    let mut acc = CaseAcc::with_capacity(template.len());
     let mut i = 0;
 
     while i < chars.len() {
@@ -154,10 +251,8 @@ pub fn expand_template(
             // `\orig` (5 文字消費): マクロ開始時点の元ファイル名。
             // 非マクロ単一ステップでは `current == ctx.original_full` のため
             // `\0` と同じ結果になる。
-            if nxt == 'o'
-                && chars.get(i + 2..i + 5) == Some(&['r', 'i', 'g'])
-            {
-                out.push_str(&ctx.original_full);
+            if nxt == 'o' && chars.get(i + 2..i + 5) == Some(&['r', 'i', 'g']) {
+                acc.push_str(&ctx.original_full);
                 i += 5;
                 continue;
             }
@@ -165,47 +260,53 @@ pub fn expand_template(
             // `\#X` (3 文字消費): 次の日時変数の先行ゼロを除去
             if nxt == '#' && i + 2 < chars.len() {
                 if let Some(v) = format_date_var(chars[i + 2], ctx, true) {
-                    out.push_str(&v);
+                    acc.push_str(&v);
                     i += 3;
                     continue;
                 }
-                out.push('\\');
-                out.push('#');
+                acc.push_char('\\');
+                acc.push_char('#');
                 i += 2;
                 continue;
             }
             match nxt {
-                '\\' => out.push('\\'),
-                '?' => out.push('?'),
-                '0' => out.push_str(current),
+                '\\' => acc.push_char('\\'),
+                '?' => acc.push_char('?'),
+                '0' => acc.push_str(current),
                 't' => {
                     let (stem, _) = split_stem_ext(current);
-                    out.push_str(stem);
+                    acc.push_str(stem);
                 }
                 'e' => {
                     let (_, ext) = split_stem_ext(current);
-                    out.push_str(ext);
+                    acc.push_str(ext);
                 }
-                'f' => out.push_str(&ctx.folder_name),
-                'F' => out.push_str(&ctx.parent_folder_name),
-                ';' => out.push_str(&format_size_with_sep(ctx.size)),
-                ':' => out.push_str(&ctx.size.to_string()),
-                'Y' | 'y' | 'm' | 'd' | 'H' | 'I' | 'M' | 'S' => {
+                'f' => acc.push_str(&ctx.folder_name),
+                'F' => acc.push_str(&ctx.parent_folder_name),
+                ';' => acc.push_str(&format_size_with_sep(ctx.size)),
+                ':' => acc.push_str(&ctx.size.to_string()),
+                'Y' | 'y' | 'm' | 'd' | 'H' | 'I' | 'M' | 'S' | 'a' | 'A' | 'b' | 'B'
+                | 'p' => {
                     if let Some(v) = format_date_var(nxt, ctx, false) {
-                        out.push_str(&v);
+                        acc.push_str(&v);
                     }
                 }
+                'u' => acc.set_mode(CaseMode::NextUpper),
+                'l' => acc.set_mode(CaseMode::NextLower),
+                'U' => acc.set_mode(CaseMode::AllUpper),
+                'L' => acc.set_mode(CaseMode::AllLower),
+                'E' => acc.set_mode(CaseMode::None),
                 d @ '1'..='9' => {
                     let idx = d.to_digit(10).unwrap() as usize;
                     if let Some(caps) = caps {
                         if let Some(m) = caps.get(idx) {
-                            out.push_str(m.as_str());
+                            acc.push_str(m.as_str());
                         }
                     }
                 }
                 _ => {
-                    out.push('\\');
-                    out.push(nxt);
+                    acc.push_char('\\');
+                    acc.push_char(nxt);
                 }
             }
             i += 2;
@@ -216,14 +317,14 @@ pub fn expand_template(
                 digits += 1;
                 j += 1;
             }
-            out.push_str(&format_seq(ctx.seq_value, digits, ctx.seq_numbering));
+            acc.push_str(&format_seq(ctx.seq_value, digits, ctx.seq_numbering));
             i = j;
         } else {
-            out.push(c);
+            acc.push_char(c);
             i += 1;
         }
     }
-    out
+    acc.finish()
 }
 
 #[cfg(test)]
@@ -330,9 +431,10 @@ mod tests {
     #[test]
     fn unknown_escape_preserved() {
         let c = ctx("/x/folder/file.txt");
+        // `\p` (ロケール) と `\u` (case 修飾) は実装済みなので `\q` で検証
         assert_eq!(
-            expand_template(r"\p_\t", None, &c, "file.txt"),
-            r"\p_file"
+            expand_template(r"\q_\t", None, &c, "file.txt"),
+            r"\q_file"
         );
     }
 
@@ -402,5 +504,103 @@ mod tests {
             expand_template(r"prefix \orig suffix", None, &c, "x"),
             "prefix original.txt suffix"
         );
+    }
+
+    // ── case 修飾子 ───────────────────────────────────────────
+    #[test]
+    fn template_case_next_upper() {
+        let c = ctx("/x/file.txt");
+        assert_eq!(
+            expand_template(r"\u\t", None, &c, "abc.md"),
+            "Abc"
+        );
+        // \u は直後 1 文字のみに作用
+        assert_eq!(
+            expand_template(r"\uabc", None, &c, "x.md"),
+            "Abc"
+        );
+    }
+
+    #[test]
+    fn template_case_next_lower() {
+        let c = ctx("/x/file.txt");
+        assert_eq!(
+            expand_template(r"\l\t", None, &c, "ABC.MD"),
+            "aBC"
+        );
+    }
+
+    #[test]
+    fn template_case_all_upper_until_E() {
+        let c = ctx("/x/file.txt");
+        assert_eq!(
+            expand_template(r"\Uabc\E def", None, &c, "x.md"),
+            "ABC def"
+        );
+    }
+
+    #[test]
+    fn template_case_all_lower_until_E() {
+        let c = ctx("/x/file.txt");
+        assert_eq!(
+            expand_template(r"\LFOO\EBAR", None, &c, "x.md"),
+            "fooBAR"
+        );
+    }
+
+    #[test]
+    fn template_case_composes_with_capture() {
+        let re = regex::Regex::new(r"^(\w+)$").unwrap();
+        let caps = dummy_caps(&re, "abc");
+        let c = ctx("/x/file.txt");
+        assert_eq!(
+            expand_template(r"\u\1", Some(&caps), &c, "file.txt"),
+            "Abc"
+        );
+    }
+
+    #[test]
+    fn template_case_composes_with_var() {
+        let c = ctx("/x/folder/file.txt");
+        // \U\f\E でフォルダ名を全大文字化
+        assert_eq!(
+            expand_template(r"\U\f\E.dat", None, &c, "file.txt"),
+            "FOLDER.dat"
+        );
+    }
+
+    #[test]
+    fn template_case_unicode_japanese_passthrough() {
+        // 日本語文字は upper/lower で変化しないことを確認（崩れない）
+        let c = ctx("/x/file.txt");
+        assert_eq!(
+            expand_template(r"\Uあいう\E", None, &c, "x.md"),
+            "あいう"
+        );
+    }
+
+    // ── ロケール変数 ──────────────────────────────────────────
+    // 文字列内容はロケール依存のため、`\a` 等が「リテラルでないこと」と
+    // 「日時情報を含む空でない文字列を返すこと」のみ検証する。
+    #[test]
+    fn template_locale_vars_recognized() {
+        let dt = Local.with_ymd_and_hms(2026, 5, 12, 14, 0, 0).unwrap();
+        let c = ctx_with_dt("/x/file.txt", dt);
+        let a = expand_template(r"\a", None, &c, "file.txt");
+        let aa = expand_template(r"\A", None, &c, "file.txt");
+        let b = expand_template(r"\b", None, &c, "file.txt");
+        let bb = expand_template(r"\B", None, &c, "file.txt");
+        let p = expand_template(r"\p", None, &c, "file.txt");
+        // リテラル `\a` `\A` `\b` `\B` `\p` が出てこないこと
+        assert!(!a.starts_with('\\'));
+        assert!(!aa.starts_with('\\'));
+        assert!(!b.starts_with('\\'));
+        assert!(!bb.starts_with('\\'));
+        assert!(!p.starts_with('\\'));
+        assert!(!a.is_empty());
+        assert!(!aa.is_empty());
+        assert!(!b.is_empty());
+        assert!(!bb.is_empty());
+        assert!(!p.is_empty());
     }
 }

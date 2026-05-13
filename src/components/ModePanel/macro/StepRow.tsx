@@ -1,3 +1,4 @@
+import type { HTMLAttributes } from "react";
 import type { BuiltinOp, RenameStep } from "../../../types/rename";
 import BuiltinMenu from "../builtin/BuiltinMenu";
 import BuiltinParams from "../builtin/BuiltinParams";
@@ -10,14 +11,13 @@ export interface StepRowProps {
   step: RenameStep;
   onChange: (step: RenameStep) => void;
   onRemove: () => void;
-  onMoveUp: (() => void) | null;
-  onMoveDown: (() => void) | null;
+  dragHandleProps?: HTMLAttributes<HTMLButtonElement>;
 }
 
 /// MacroEditor 内で 1 ステップを編集するための行。
 /// kind selector + 種別ごとのフォームを並べる。
 export default function StepRow(props: StepRowProps) {
-  const { index, step, onChange, onRemove, onMoveUp, onMoveDown } = props;
+  const { index, step, onChange, onRemove, dragHandleProps } = props;
 
   const setKind = (kind: StepKind) => {
     if (kind !== step.kind) onChange(initialStep(kind));
@@ -26,6 +26,15 @@ export default function StepRow(props: StepRowProps) {
   return (
     <div className={styles.row}>
       <div className={styles.header}>
+        <button
+          type="button"
+          className={styles.dragHandle}
+          aria-label="ドラッグで並べ替え"
+          title="ドラッグで並べ替え"
+          {...dragHandleProps}
+        >
+          ⋮⋮
+        </button>
         <span className={styles.idx}>Step {index + 1}</span>
         <select
           aria-label="ステップ種別"
@@ -39,24 +48,6 @@ export default function StepRow(props: StepRowProps) {
           <option value="char_convert">文字変換</option>
         </select>
         <div className={styles.controls}>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={onMoveUp ?? undefined}
-            disabled={!onMoveUp}
-            title="上に移動"
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={onMoveDown ?? undefined}
-            disabled={!onMoveDown}
-            title="下に移動"
-          >
-            ↓
-          </button>
           <button
             type="button"
             className={styles.removeBtn}

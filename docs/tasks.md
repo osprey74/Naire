@@ -369,6 +369,15 @@ HANDOFF 仕様の単一マクロ JSON 例:
 - 設定読み込み失敗時はサイレントにデフォルトへフォールバック（コンソールエラーのみ）
 - 設定ファイルパス: Tauri が標準で割り振る `appData` 配下に `config.json`
 
-## Phase 3 以降
+## Post-v0.1.0 — UI ポリッシュ
 
-未着手。HANDOFF_naire.md の優先順位に従って展開する。
+- [x] アプリについてダイアログ（バージョン + Flaticon 帰属リンク、`tauri-plugin-opener` で外部 URL を OS ブラウザに）
+- [x] エクスプローラー風フォルダツリー（`list_folder_tree` コマンド + 再帰 TreeNode + auto-expand）。macOS は `$HOME` ルート、Windows は接続中ドライブ列挙
+- [x] ActionBar の「クリア」を「再読み込み」へ（選択は path ベースで保持）
+
+## Post-v0.1.0 — 既知の制限事項対応
+
+- [x] **ウィンドウサイズ・位置の復元** — `tauri-plugin-window-state` 導入。`AppConfig.window` プレースホルダは削除（プラグインが独立した state ファイルで管理）
+- [x] **マクロステップの D&D 並べ替え** — `@dnd-kit/sortable` で StepRow を sortable 化（上下ボタンは drag handle に置換）。`useLayoutEffect` で transform を imperative 適用してインライン style を回避
+- [x] **ロケール依存日時変数**（`\a \A \b \B \p`）と **大文字小文字制御変数**（`\u \U \l \L \E`）— `chrono::format_localized` + `sys-locale` で OS ロケール解決、`CaseAcc` アキュムレータで case 修飾子を実装。MACRO_REFERENCE EN/JA も更新。テスト 8 件追加（計 84 件 PASS）
+- [x] **ネットワークドライブのブラウズ対応** — macOS: `/Volumes/*`（外部/SMB/AFP マウント）をツリールートに追加。Windows: マップ済みネットワークドライブは既存のドライブ列挙でカバー、未マップ UNC は「場所を選択…」ダイアログで指定可能。プログラム的な Windows ネットワーク列挙（`WNetEnumResource`）は依存追加が重く UX 価値が低いため見送り

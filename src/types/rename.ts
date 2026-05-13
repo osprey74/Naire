@@ -128,7 +128,6 @@ export interface AppConfig {
   filter: string;
   filter_history: string[];
   seq: SequenceConfig;
-  window: { width: number; height: number; x?: number; y?: number };
   macros: Macro[];
   column_widths?: PreviewColumnWidths;
 }

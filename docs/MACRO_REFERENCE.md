@@ -148,10 +148,29 @@ filesystem path and do not change during macro execution.
 | `\M` | Minute 00–59 |
 | `\S` | Second 00–59 |
 | `\#X` | Strip leading zero from the next date variable (`\#m` → `5` not `05`) |
+| `\a` | Abbreviated weekday name (OS locale, e.g. `Mon` / `月`) |
+| `\A` | Full weekday name (OS locale, e.g. `Monday` / `月曜日`) |
+| `\b` | Abbreviated month name (OS locale, e.g. `May` / `5月`) |
+| `\B` | Full month name (OS locale, e.g. `May` / `5月`) |
+| `\p` | AM/PM designation (OS locale, e.g. `AM` / `午前`) |
 
-Not yet implemented (passes through as literal): `\a \A \b \B \p`
-(locale-dependent weekday / month / am-pm), and `\u \U \l \L \E`
-(case-control).
+Locale-dependent variables use `chrono::format_localized` with the OS
+locale (POSIX fallback if unrecognized).
+
+### Case control
+
+| Variable | Meaning |
+|---|---|
+| `\u` | Uppercase the next single character |
+| `\l` | Lowercase the next single character |
+| `\U` | Uppercase all characters until `\E` |
+| `\L` | Lowercase all characters until `\E` |
+| `\E` | End `\U` / `\L` effect |
+
+Case modifiers apply to any subsequent output including variable
+expansions and regex captures (e.g. `\u\1` uppercases the first character
+of capture group 1). Characters without case distinction (e.g. Japanese
+kana / kanji) pass through unchanged.
 
 ### Capture groups
 

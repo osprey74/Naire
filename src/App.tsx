@@ -294,8 +294,6 @@ export default function App() {
       filter,
       filter_history: filterHistory,
       seq,
-      // window state は将来対応（Phase 13 では placeholder）
-      window: { width: 1100, height: 720 },
       macros,
       column_widths: columnWidths,
     };

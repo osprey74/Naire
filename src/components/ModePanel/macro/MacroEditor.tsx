@@ -1,4 +1,21 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { Macro, RenameStep } from "../../../types/rename";
 import StepRow from "./StepRow";
 import { initialStep, type StepKind } from "./step-defaults";
@@ -12,36 +29,115 @@ export interface MacroEditorProps {
   onExport: (m: Macro) => void;
 }
 
+interface StepWithId {
+  id: string;
+  step: RenameStep;
+}
+
+function SortableStepRow({
+  id,
+  index,
+  step,
+  onChange,
+  onRemove,
+}: {
+  id: string;
+  index: number;
+  step: RenameStep;
+  onChange: (step: RenameStep) => void;
+  onRemove: () => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  // dnd-kit の transform / transition は毎フレーム変動するため CSS モジュールでは表現
+  // できない。useLayoutEffect で DOM へ直接適用してインライン style を回避する。
+  const localRef = useRef<HTMLDivElement | null>(null);
+  const setRefs = (node: HTMLDivElement | null) => {
+    localRef.current = node;
+    setNodeRef(node);
+  };
+  useLayoutEffect(() => {
+    const el = localRef.current;
+    if (!el) return;
+    const t = CSS.Transform.toString(transform);
+    if (t) el.style.transform = t;
+    else el.style.removeProperty("transform");
+    if (transition) el.style.transition = transition;
+    else el.style.removeProperty("transition");
+    if (isDragging) {
+      el.style.opacity = "0.5";
+      el.style.zIndex = "10";
+    } else {
+      el.style.removeProperty("opacity");
+      el.style.removeProperty("z-index");
+    }
+  });
+
+  return (
+    <div ref={setRefs}>
+      <StepRow
+        index={index}
+        step={step}
+        onChange={onChange}
+        onRemove={onRemove}
+        dragHandleProps={{ ...attributes, ...listeners }}
+      />
+    </div>
+  );
+}
+
 export default function MacroEditor(props: MacroEditorProps) {
   const { macro, onSave, onDelete, onCancel, onExport } = props;
   const [name, setName] = useState(macro.name);
-  const [steps, setSteps] = useState<RenameStep[]>(macro.steps);
+  const [items, setItems] = useState<StepWithId[]>(() =>
+    macro.steps.map((s) => ({ id: crypto.randomUUID(), step: s })),
+  );
 
-  const updateStep = (i: number, next: RenameStep) =>
-    setSteps((arr) => arr.map((s, idx) => (idx === i ? next : s)));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
-  const removeStep = (i: number) =>
-    setSteps((arr) => arr.filter((_, idx) => idx !== i));
+  const updateStep = (id: string, next: RenameStep) =>
+    setItems((arr) =>
+      arr.map((it) => (it.id === id ? { ...it, step: next } : it)),
+    );
 
-  const moveStep = (i: number, dir: -1 | 1) =>
-    setSteps((arr) => {
-      const j = i + dir;
-      if (j < 0 || j >= arr.length) return arr;
-      const next = arr.slice();
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
+  const removeStep = (id: string) =>
+    setItems((arr) => arr.filter((it) => it.id !== id));
+
+  const addStep = (kind: StepKind) =>
+    setItems((arr) => [
+      ...arr,
+      { id: crypto.randomUUID(), step: initialStep(kind) },
+    ]);
+
+  const onDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    setItems((arr) => {
+      const oldIdx = arr.findIndex((x) => x.id === active.id);
+      const newIdx = arr.findIndex((x) => x.id === over.id);
+      if (oldIdx < 0 || newIdx < 0) return arr;
+      return arrayMove(arr, oldIdx, newIdx);
     });
-
-  const addStep = (kind: StepKind) => {
-    setSteps((arr) => [...arr, initialStep(kind)]);
   };
+
+  const collectSteps = () => items.map((it) => it.step);
 
   const handleSave = () => {
     const now = new Date().toISOString();
     onSave({
       ...macro,
       name: name.trim() || "(無題)",
-      steps,
+      steps: collectSteps(),
       updated_at: now,
     });
   };
@@ -85,26 +181,36 @@ export default function MacroEditor(props: MacroEditorProps) {
 
           <div className={styles.stepsSection}>
             <div className={styles.stepsHeader}>
-              <span className={styles.label}>ステップ（上から順に適用）</span>
+              <span className={styles.label}>
+                ステップ（上から順に適用、ドラッグで並べ替え）
+              </span>
             </div>
-            {steps.length === 0 ? (
+            {items.length === 0 ? (
               <div className={styles.empty}>
                 まだステップがありません。下のボタンから追加してください。
               </div>
             ) : (
-              steps.map((step, i) => (
-                <StepRow
-                  key={i}
-                  index={i}
-                  step={step}
-                  onChange={(s) => updateStep(i, s)}
-                  onRemove={() => removeStep(i)}
-                  onMoveUp={i > 0 ? () => moveStep(i, -1) : null}
-                  onMoveDown={
-                    i < steps.length - 1 ? () => moveStep(i, 1) : null
-                  }
-                />
-              ))
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={onDragEnd}
+              >
+                <SortableContext
+                  items={items.map((it) => it.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {items.map((it, i) => (
+                    <SortableStepRow
+                      key={it.id}
+                      id={it.id}
+                      index={i}
+                      step={it.step}
+                      onChange={(s) => updateStep(it.id, s)}
+                      onRemove={() => removeStep(it.id)}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
             )}
             <div className={styles.addRow}>
               <span className={styles.addLabel}>追加:</span>
@@ -156,7 +262,7 @@ export default function MacroEditor(props: MacroEditorProps) {
                 onExport({
                   ...macro,
                   name: name.trim() || "(無題)",
-                  steps,
+                  steps: collectSteps(),
                 })
               }
               title="編集中のマクロを JSON ファイルへ書き出し"

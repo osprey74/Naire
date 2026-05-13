@@ -699,22 +699,50 @@ fn tree_roots() -> Vec<DirNode> {
 
 #[cfg(unix)]
 fn tree_roots() -> Vec<DirNode> {
-    let Some(home_os) = std::env::var_os("HOME") else {
-        return Vec::new();
-    };
-    let home = PathBuf::from(&home_os);
-    if !home.is_dir() {
-        return Vec::new();
+    let mut roots = Vec::new();
+    if let Some(home_os) = std::env::var_os("HOME") {
+        let home = PathBuf::from(&home_os);
+        if home.is_dir() {
+            let name = home
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Home".to_string());
+            roots.push(DirNode {
+                name,
+                path: home.to_string_lossy().into_owned(),
+                has_children: has_subdir(&home),
+            });
+        }
     }
-    let name = home
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Home".to_string());
-    vec![DirNode {
-        name,
-        path: home.to_string_lossy().into_owned(),
-        has_children: has_subdir(&home),
-    }]
+    #[cfg(target_os = "macos")]
+    {
+        // /Volumes 配下: 外部ディスク / SMB / AFP 等のネットワークマウントを含む。
+        // 起動ボリュームは `/Volumes/<name>` から `/` への symlink として現れる場合があり
+        // 重複しうるが、ユーザがシステムルートを参照したいケースもあるためそのまま含める。
+        if let Ok(entries) = std::fs::read_dir("/Volumes") {
+            let mut volumes: Vec<DirNode> = entries
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        return None;
+                    }
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with('.') {
+                        return None;
+                    }
+                    Some(DirNode {
+                        name,
+                        path: path.to_string_lossy().into_owned(),
+                        has_children: has_subdir(&path),
+                    })
+                })
+                .collect();
+            volumes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            roots.extend(volumes);
+        }
+    }
+    roots
 }
 
 /// `path` 直下のサブフォルダを列挙する。`path` が None ならルート（Windows: ドライブ
