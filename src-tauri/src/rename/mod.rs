@@ -2,6 +2,7 @@ pub mod advanced;
 pub mod builtin;
 pub mod char_convert;
 pub mod convert;
+pub mod group;
 pub mod macro_runner;
 pub mod sequence;
 pub mod undo;

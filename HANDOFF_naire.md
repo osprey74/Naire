@@ -20,6 +20,7 @@ Windows / macOS 対応の一括リネームツール。
 - サブフォルダ再帰処理・リアルタイムプレビュー・複数段 UNDO（最大 20 処理）
 - マクロの JSON インポート／エクスポート（Claude 連携用途を含む）
 - 表示フィルタ（グロブパターンで一覧表示を絞り込み・履歴とプリセット内蔵）
+- **フォルダ集約**（共通プレフィックスから新規親フォルダを作成し、選択フォルダを移動 + 内部を連番リネーム。同一親直下に限定・異ボリューム移動なし）
 
 **スコープ外（実装しない）**
 - タグリネーム（ID3 / EXIF）
@@ -28,7 +29,7 @@ Windows / macOS 対応の一括リネームツール。
 - REDO
 - ネットワークドライブのブラウズ
 - スクリプト機能（FR の VBScript/JScript 拡張、Excel COM 連携等） — Windows 限定技術かつ非推奨。マクロ機能で代替可能
-- フォルダ振り分け（リネーム時に別フォルダへ移動）— Naire はリネームのみ
+- 汎用フォルダ振り分け（任意ルールで別フォルダへ移動）— ただし「**フォルダ集約**」機能のみ唯一の例外（複数フォルダを共通プレフィックスでまとめる用途に限定）
 - `*` ランダム数字変数 — 再現性なし
 
 ---
@@ -348,6 +349,57 @@ pub async fn export_macros(
 pub async fn import_macros(
     app: tauri::AppHandle,
 ) -> Result<Vec<Macro>, String>
+
+// ── フォルダ集約（Phase 14） ─────────────────────────────────
+
+/// 選択フォルダから共通プレフィックスとプレビュー情報を返す（FS は変更しない）
+#[tauri::command]
+pub async fn compute_group_preview(
+    parent_folder:  String,
+    selected_names: Vec<String>,
+    rename:         Option<GroupRenameDto>,
+) -> Result<GroupPreview, String>
+
+/// 集約フォルダ作成 + 選択フォルダ移動 + 内部の連番リネームを実行する
+#[tauri::command]
+pub async fn execute_group(
+    parent_folder:  String,
+    selected_names: Vec<String>,
+    group_name:     String,
+    rename:         Option<GroupRenameDto>,
+) -> Result<RenameRecord, String>
+```
+
+### Phase 14 関連 DTO
+
+```rust
+/// 集約後の連番リネーム指定（定型 #1 add_seq_str 相当）
+#[derive(Serialize, Deserialize, Clone)]
+pub struct GroupRenameDto {
+    pub prefix: String,   // 既定 "" (空文字)
+    pub suffix: String,   // 既定 "" (空文字)
+    pub digits: u32,      // 既定 2
+    pub start:  u64,      // 既定 1
+    pub step:   u64,      // 既定 1
+}
+
+/// 集約プレビュー結果
+#[derive(Serialize, Clone)]
+pub struct GroupPreview {
+    pub parent_folder:  String,
+    pub common_prefix:  String,             // trim 後（半角/全角スペース）
+    pub group_name:     String,             // = common_prefix（デフォルト値）
+    pub conflict:       bool,               // parent/group_name が既存と衝突するか
+    pub items:          Vec<GroupItemPreview>,  // フォルダ名昇順
+    pub error:          Option<String>,     // 同一親違反など、ブロッキングエラー
+}
+
+#[derive(Serialize, Clone)]
+pub struct GroupItemPreview {
+    pub original_name: String,   // 移動前のフォルダ名
+    pub renamed:       String,   // 連番リネーム後の名前（rename=None なら original_name と同値）
+    pub final_path:    String,   // parent/group_name/renamed
+}
 ```
 
 ---
@@ -369,7 +421,8 @@ src-tauri/src/
     ├── macro_runner.rs   # マクロ：ステップを fold で順次適用
     ├── sequence.rs       # 連番フォーマッタ（10進/16進大文字/英大文字 Excel 列名）
     ├── variables.rs      # 置換変数展開（\f \e \t \Y\m\d \orig 等。日時はファイル mtime ベース）
-    └── undo.rs           # RenameRecord の逆適用
+    ├── undo.rs           # RenameRecord の逆適用（Rename / CreateDir op の逆適用）
+    └── group.rs          # フォルダ集約（共通プレフィックス算出 + 集約 + 連番リネーム）
 ```
 
 ---
@@ -1143,16 +1196,156 @@ Step 1  [正規表現]  検索: ^\[(.)(.*)\].*   置換: \l\1
 
 ---
 
+## フォルダ集約仕様
+
+> Naire の「リネームのみ」原則の **唯一の例外**。複数フォルダを共通プレフィックスから生成した新規親フォルダにまとめつつ、内部を連番リネームする機能。
+
+### 概念図
+
+```
+集約前:                                    集約後:
+parent/                                    parent/
+├── [Author] Title Vol01                  └── [Author] Title/
+├── [Author] Title Vol02                      ├── 01
+├── [Author] Title Vol03                      ├── 02
+└── （他のファイル/フォルダ）                  └── 03
+                                           └── （他のファイル/フォルダ）
+```
+
+### 前提条件・バリデーション
+
+| # | 条件 | 違反時の挙動 |
+|---|---|---|
+| 1 | `target == "folder"` | UI 側で集約タブを disabled |
+| 2 | 選択フォルダ数 ≥ 2 | UI 側で「集約実行」を disabled |
+| 3 | 全選択肢が **同じ親フォルダ直下** | エラー停止（再帰探索で異なる階層を選択している場合） |
+| 4 | 共通プレフィックスが trim 後に非空 | エラー停止（共通要素なし） |
+| 5 | 集約名がファイル名禁則文字を含まない | OS が `mkdir` で返すエラーをそのまま伝播 |
+| 6 | 集約名が親フォルダ内で既存と衝突しない | エラー停止（既存名 `<group_name>` あり） |
+| 7 | 異ボリュームへの移動を発生させない | 集約フォルダは選択フォルダと同じ親に作成 |
+
+### 共通プレフィックス算出
+
+```rust
+// src-tauri/src/rename/group.rs
+
+/// 文字（char）単位で最長共通先頭部分を抽出し、
+/// 末尾の半角/全角スペースを trim する。
+pub fn longest_common_prefix(names: &[&str]) -> String {
+    if names.is_empty() { return String::new(); }
+    let first = names[0];
+    let mut max_chars = first.chars().count();
+    for name in &names[1..] {
+        let common = first.chars().zip(name.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+        if common < max_chars { max_chars = common; }
+    }
+    let prefix: String = first.chars().take(max_chars).collect();
+    prefix.trim_end_matches(|c: char| c == ' ' || c == '\u{3000}').to_string()
+}
+```
+
+- **文字単位**: バイト境界ではなく Unicode char 単位で比較するため、日本語ファイル名で安全に動作
+- **trim 対象**: 末尾の半角スペース `U+0020` と全角スペース `U+3000` のみ
+- **trim 対象外**: 括弧類 `]`, `）`, `」`, 記号 `-` `_` 等は残す（ユーザが UI で編集可能）
+
+### 連番リネーム
+
+定型 #1 **`add_seq_str`（文字列＋連番＋文字列）** と同一動作。`GroupRenameDto` で指定。
+
+| パラメータ | 既定値 | 説明 |
+|---|---|---|
+| `prefix` | `""` (空文字) | 連番の前に置く文字列 |
+| `suffix` | `""` (空文字) | 連番の後に置く文字列 |
+| `digits` | `2` | 連番桁数（ゼロパディング） |
+| `start` | `1` | 開始値 |
+| `step` | `1` | 増分 |
+
+連番は `SequenceConfig.numbering` の進数設定（decimal / hex / alpha）を共有する。
+
+**省略時の挙動**: `rename: None` の場合は集約後のリネームをスキップ（移動のみ）。
+
+### 処理フロー（execute_group）
+
+1. **バリデーション** — 前提条件 1〜7 を確認、違反時はエラー返却
+2. **集約フォルダ作成** — `mkdir(parent/group_name)`、`CreateDir` op を記録
+3. **各選択フォルダを移動** — `std::fs::rename(parent/<name>, parent/group_name/<name>)`、`Rename` op を記録
+4. **連番リネーム** — `rename: Some` の場合、集約後の中身をフォルダ名昇順でソートし、`{prefix}{seq}{suffix}` で各フォルダを再リネーム、`Rename` op を追記
+5. **RenameRecord 返却** — `CreateDir + Rename×N(移動) + Rename×N(連番)` をまとめて 1 件
+
+### RenameOp 拡張
+
+```rust
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type")]
+pub enum RenameOp {
+    #[serde(rename = "rename")]
+    Rename { old_path: String, new_path: String },
+    #[serde(rename = "create_dir")]
+    CreateDir { path: String },
+}
+```
+
+既存のリネーム系コマンド（`execute_rename` / `apply_rename_to_filesystem`）は `Rename` バリアントのみを生成する。`CreateDir` は `execute_group` 専用。
+
+> **UNDO スタック互換性**: スタックは永続化していないため（HANDOFF UNDO 仕様）、enum 化によるシリアライズ形式変更の後方互換性は不要。アプリ再起動でスタックはクリアされる。
+
+### UNDO 拡張
+
+`undo_ops` を以下の通り拡張する。
+
+- `Rename` op の逆: `new_path → old_path` でリネーム（既存挙動）
+- `CreateDir` op の逆: `std::fs::remove_dir(path)`（**空フォルダのみ**削除。中身が残っていればエラー）
+
+逆順実行のため、`[CreateDir, Move×N(=Rename), Rename×N]` の record は以下の順で巻き戻る:
+
+1. 連番リネームを末尾から戻す（`Rename` 逆）
+2. 移動を末尾から戻す（`Rename` 逆 = 元の親へ戻す）
+3. 集約フォルダを削除（`CreateDir` 逆 = 空ディレクトリ削除）
+
+### UI レイアウト
+
+```
+[定型] [高度な] [マクロ] [集約]   ← NEW タブ
+─────────────────────────────────
+ⓘ 選択フォルダ: 3 件  親: G:\Manga
+集約フォルダ名: [[咲野日暮×ロウ] 中年魔術師の悠々自適な...]  [自動算出に戻す]
+
+リネーム設定（チェックを外すと移動のみ）
+☑ 連番リネームを実行する
+  プレフィックス: [    ]   サフィックス: [    ]
+  桁数: [2]  開始: [1]  ステップ: [1]
+
+プレビュー（昇順ソート後）:
+  [咲野...] 第01巻 → [咲野...]/01
+  [咲野...] 第02巻 → [咲野...]/02
+  [咲野...] 第03巻 → [咲野...]/03
+
+[集約実行]
+```
+
+### 異ボリューム移動の扱い
+
+`std::fs::rename` は Windows / macOS 共通で**同一ボリューム内のみ**動作する。集約フォルダを「選択フォルダと同じ親」に作成する仕様により異ボリューム移動は原理的に発生しないが、ネットワークドライブやマウントポイントを跨ぐエッジケース（同一論理パスでも物理ボリュームが異なる場合）は OS が返す `EXDEV` を文字列化してそのまま UI に表示する。
+
+### CLAUDE 連携（マクロのような自動化）
+
+Phase 14 ではマクロ JSON 連携は対象外。集約は UI からの 1 操作に閉じる。
+
+---
+
 ## UNDO 仕様
 
 | 項目 | 仕様 |
 |---|---|
 | スタック単位 | **処理（バッチ操作）1 回分** |
-| 1件の内容 | `execute_rename` 1 回で変更した全ファイルの `{old_path, new_path}` ペア配列 |
+| 1件の内容 | `execute_rename` 1 回で変更した全ファイルの `RenameOp`（Rename / CreateDir）配列 |
 | スタック上限 | **20 処理**（1処理に何千ファイルが含まれていても 1 件と数える） |
 | UNDO 操作 | スタック最上位の `RenameRecord` を pop → `undo_rename(record)` で逆適用 |
 | REDO | **実装しない** |
 | 永続化 | **しない**（アプリ終了時にスタックはクリア） |
+| RenameOp 種別 | `Rename { old_path, new_path }` または `CreateDir { path }`（Phase 14 で集約用に追加） |
 
 ---
 
@@ -1263,6 +1456,7 @@ Step 1  [正規表現]  検索: ^\[(.)(.*)\].*   置換: \l\1
 11. **マクロシステム**（ステップ処理 + `\orig` 変数）
 12. **マクロ JSON インポート／エクスポート**
 13. **設定永続化**（最終仕上げ）
+14. **フォルダ集約**（Phase 14。共通プレフィックス算出 + 集約 + 連番リネーム。RenameOp の enum 化 + UNDO 拡張 + 新タブ実装）
 
 ---
 
@@ -1279,6 +1473,7 @@ Flexible Renamer 後継の一括リネームツール（Tauri v2 + React + TypeS
 - ファイル属性・タイムスタンプ変更
 - 連番オブジェクト生成
 - REDO
+- 汎用フォルダ振り分け（「フォルダ集約」機能のみ唯一の例外）
 
 ## 命名規則
 - Rust: snake_case
@@ -1311,6 +1506,10 @@ Flexible Renamer 後継の一括リネームツール（Tauri v2 + React + TypeS
 - マクロ IO（インポート／エクスポート）は macro_io.rs に集約する
 - インポート時は id を必ず再生成する（重複防止）
 - エクスポートは単一マクロ＝オブジェクト、複数＝配列で書き分ける
+- フォルダ集約は src-tauri/src/rename/group.rs に集約。`longest_common_prefix` は char 単位比較 + 末尾 `' '` / `U+3000` のみ trim
+- 集約フォルダは選択フォルダと同じ親直下に作成（異ボリューム移動を発生させないため）。選択フォルダが異なる親に分散している場合はエラー停止
+- RenameOp は enum 化（Rename / CreateDir）。CreateDir op は execute_group のみが生成し、UNDO 時は空フォルダの remove_dir で逆適用する
+- 集約後の連番リネームは定型 #1 add_seq_str と同一動作（`{prefix}{seq}{suffix}` で stem 置換）。フォルダ名昇順でソートしてから順に番号付け
 
 ## Cargo.toml 主要依存
 regex = "1"

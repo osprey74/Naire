@@ -1,6 +1,6 @@
 [package]
 name = "naire"
-version = "0.2.0"
+version = "1.0.0"
 description = "一括リネームツール"
 authors = ["osprey74"]
 edition = "2021"

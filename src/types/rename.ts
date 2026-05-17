@@ -69,14 +69,41 @@ export interface Macro {
 }
 
 // ── UNDO ─────────────────────────────────────────────────────
-export interface RenameOp {
-  old_path: string;
-  new_path: string;
-}
+// Phase 14 から discriminated union 化。フロントエンドは内容に触らず
+// invoke の往復に使うだけだが、型整合性のため Rust 側の `RenameOp` に揃える。
+export type RenameOp =
+  | { type: "rename"; old_path: string; new_path: string }
+  | { type: "create_dir"; path: string };
+
 export interface RenameRecord {
   id: string;
   timestamp: string;
   ops: RenameOp[];
+}
+
+// ── フォルダ集約（Phase 14）────────────────────────────────────
+export interface GroupRenameDto {
+  prefix: string;
+  suffix: string;
+  digits: number;
+  start: number;
+  step: number;
+  numbering: "decimal" | "hex" | "alpha";
+}
+
+export interface GroupItemPreview {
+  original_name: string;
+  renamed: string;
+  final_path: string;
+}
+
+export interface GroupPreview {
+  parent_folder: string;
+  common_prefix: string;
+  group_name: string;
+  conflict: boolean;
+  items: GroupItemPreview[];
+  error: string | null;
 }
 
 // ── プレビュー行 ─────────────────────────────────────────────
@@ -121,7 +148,7 @@ export interface PreviewColumnWidths {
 // ── アプリ設定 ───────────────────────────────────────────────
 export interface AppConfig {
   last_folder: string;
-  last_mode: "builtin" | "advanced" | "macro";
+  last_mode: "builtin" | "advanced" | "macro" | "group";
   last_target: TargetType;
   recursive: boolean;
   depth: number;

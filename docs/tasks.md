@@ -20,8 +20,9 @@
 | 11 | マクロシステム | 完了 |
 | 12 | マクロ JSON 入出力 | 完了 |
 | 13 | 設定永続化 | 完了 |
+| 14 | フォルダ集約（共通プレフィックス + 移動 + 連番リネーム） | 完了 |
 
-完了フェーズ: 13 / 13 🎉
+完了フェーズ: 14 / 14 🎉
 
 ---
 
@@ -381,3 +382,111 @@ HANDOFF 仕様の単一マクロ JSON 例:
 - [x] **マクロステップの D&D 並べ替え** — `@dnd-kit/sortable` で StepRow を sortable 化（上下ボタンは drag handle に置換）。`useLayoutEffect` で transform を imperative 適用してインライン style を回避
 - [x] **ロケール依存日時変数**（`\a \A \b \B \p`）と **大文字小文字制御変数**（`\u \U \l \L \E`）— `chrono::format_localized` + `sys-locale` で OS ロケール解決、`CaseAcc` アキュムレータで case 修飾子を実装。MACRO_REFERENCE EN/JA も更新。テスト 8 件追加（計 84 件 PASS）
 - [x] **ネットワークドライブのブラウズ対応** — macOS: `/Volumes/*`（外部/SMB/AFP マウント）をツリールートに追加。Windows: マップ済みネットワークドライブは既存のドライブ列挙でカバー、未マップ UNC は「場所を選択…」ダイアログで指定可能。プログラム的な Windows ネットワーク列挙（`WNetEnumResource`）は依存追加が重く UX 価値が低いため見送り
+
+## Phase 14 — フォルダ集約
+
+> Naire の「リネームのみ」原則の唯一の例外。複数フォルダを共通プレフィックスから生成した親フォルダに集約し、内部を連番リネームする。
+> 詳細仕様は HANDOFF_naire.md の「## フォルダ集約仕様」を参照。
+
+### 14.1 — 共通プレフィックス抽出（バックエンド）
+
+- [x] `src-tauri/src/rename/group.rs` 新設、`rename/mod.rs` に登録
+- [x] `longest_common_prefix(names: &[&str]) -> String` 実装
+  - char 単位で共通プレフィックス算出
+  - 共通部分が入力の完全 prefix なら末尾スペースのみ trim
+  - 途中で切れている場合は最後の空白で切り戻し
+  - 空白が一切なければ raw prefix を fallback として返す
+- [x] テスト 15 件追加（全 99 件 PASS）
+  - 日本語混在 / 半角全角スペース trim / 単一要素 / 共通要素なし / 完全一致
+  - 完全 prefix / 空白なし fallback / 絵文字 char 境界安全性
+  - 提示実例（コミック第N巻パターン）
+
+> 仕様改良ポイント: 当初の「末尾スペースのみ trim」案では `[咲野...]攻略 第0` が残ってしまうため、「最後の空白で切り戻し」ロジックを追加。これにより `第0` のような部分トークンが除去される。空白が一切ないケース（例: `Doraemon-Vol01`/`Doraemon-Vol02`）では raw prefix を fallback として返し、ユーザが UI で編集できる前提とする。
+
+### 14.2 — RenameOp の enum 化 + UNDO 拡張
+
+- [x] `commands.rs` の `RenameOp` を `enum { Rename, CreateDir }` に変更（`#[serde(tag = "type", rename_all = "snake_case")]`）
+- [x] 既存のリネーム系コマンド（`execute_rename` / `apply_rename_to_filesystem`）の `RenameRecord` 生成箇所を `Rename` バリアントに更新
+- [x] `rename/undo.rs::OpView` を enum 化（`Rename` / `CreateDir`）、`undo_ops` を `CreateDir` 対応に拡張（`std::fs::remove_dir`、空でなければエラー）
+- [x] `undo_rename` コマンドの `RenameOp` → `OpView` マッピングを `match` で更新
+- [x] TypeScript 型定義 (`src/types/rename.ts`) を discriminated union に更新
+- [x] UNDO テスト 4 件追加（**全 103 件 PASS**）:
+  - `undo_create_dir_removes_empty_dir`: 空フォルダの削除
+  - `undo_create_dir_fails_when_not_empty`: 中身があると失敗
+  - `undo_create_dir_fails_when_path_missing`: 存在しないパスは失敗
+  - `undo_mixed_record_reverses_in_reverse_order`: 集約操作（CreateDir + Rename×2）の逆順実行
+- [x] TypeScript の型チェック (`npx tsc --noEmit`) PASS
+
+### 14.3 — execute_group / compute_group_preview コマンド
+
+- [x] `group.rs` にプラン生成ロジック追加（`GroupRenameSpec` / `GroupItemPlan` / `GroupPlan` / `format_group_rename` / `build_plan` / `find_renamed_collision`）。9 件の単体テスト追加
+- [x] `commands.rs` に `GroupRenameDto` / `GroupItemPreview` / `GroupPreview` DTO を追加
+- [x] `compute_group_preview` 実装: バリデーション + 共通プレフィックス算出 + 連番リネーム結果のドライラン
+  - エラーは `GroupPreview.error` に格納（Tauri Err は使わない）→ UI が常に preview を受け取れる
+  - `conflict` フィールドで集約フォルダ名の衝突を soft error として通知
+- [x] `execute_group` 実装:
+  - `compute_group_preview_impl` を再利用してバリデーション
+  - **move + rename を単一の `std::fs::rename` に統合**（最終パスへ直接移動、ops 数を最小化）
+  - `RenameRecord = CreateDir + Rename×N` を返却
+- [x] 連番リネーム: 定型 #1 の **アルゴリズム** を `format_group_rename` で再実装（`add_seq_str` 関数を直接呼ばないのは、フォルダ名の `.` を拡張子と誤認しないため）
+- [x] `lib.rs` の `invoke_handler` に `compute_group_preview` / `execute_group` 登録
+- [x] テスト 15 件追加（**全 127 件 PASS**）:
+  - **preview 系 (10 件)**: 正常 / prefix・suffix 指定 / 空選択 / 単独選択 / 不在フォルダ / ファイル選択 / 衝突 / step=0 / 空 group_name / rename 省略
+  - **execute 系 (4 件)**: 正常 / 衝突阻止 / 不正選択阻止 / rename 省略時の移動のみ
+  - **round trip (1 件)**: 集約→UNDO で完全復元
+- [x] 同期 `_impl` 関数を分離（テスト容易性 + tokio 不要）
+
+> 設計判断: 当初計画では「移動 → 連番リネーム」の 2 フェーズで 2N ops を想定していたが、最終パスへ直接 `std::fs::rename` する単一フェーズに変更（N ops + CreateDir）。UNDO の挙動も同等に保たれる。
+
+### 14.4 — フロントエンド「集約」タブ
+
+- [x] TypeScript 型定義追加: `GroupRenameDto` / `GroupItemPreview` / `GroupPreview` (src/types/rename.ts)
+- [x] `AppConfig.last_mode` に `"group"` バリアントを追加
+- [x] `ModePanel.tsx` の `Mode` 型に `"group"` を追加、新タブと `<GroupPanel>` レンダー分岐
+- [x] `ModePanel/group/GroupPanel.tsx` 新設:
+  - target=file 時 / 選択<2 件時の案内表示
+  - 集約フォルダ名入力（自動算出 + 編集可能 + 「自動算出に戻す」ボタン、`nameDirty` フラグで上書き抑止）
+  - 「連番リネームを実行する」チェックボックス
+  - プレフィックス / サフィックス / 桁数 / 開始 / ステップ 入力（無効時は disabled）
+  - エラー（赤）/ 衝突警告（オレンジ）バナー
+  - 「集約実行」ボタン
+- [x] `GroupPanel.module.css`: 既存パネルと統一感のあるスタイル
+- [x] `App.tsx`:
+  - `groupState` / `groupPreview` / `groupComputing` state を追加
+  - `dirname()` ヘルパで選択フォルダの親パスを導出（Windows / POSIX 両対応）
+  - `groupSelection` useMemo: 選択 PreviewItem から親パス・名前・sameParent を派生
+  - 200ms debounce で `compute_group_preview` を invoke、結果を反映
+  - 自動算出時のみ `groupState.groupName` を共通プレフィックスに同期
+  - 異親選択時は preview に上書きエラーを反映（`effectiveGroupPreview`）
+  - `onGroupExecute` ハンドラで `execute_group` 呼び出し、成功時に UNDO スタックへ push
+  - モード切替 / フォルダ・フィルタ変更時に集約状態をリセット
+  - 集約モード中は ActionBar の「リネーム実行」を無効化（独立した「集約実行」を使う）
+- [x] **不具合修正**: 集約モード時に PreviewPanel の `items` を集約後パスに切り替えると、PreviewPanel の「items にないパスを自動間引きする」ロジックが選択を即時解除してしまう問題を発見。集約モードでも PreviewPanel は通常のフォルダ一覧を維持し、集約後リネームのプレビューは GroupPanel 内の小テーブルで表示する設計に変更
+- [x] TypeScript 型チェック (`npx tsc --noEmit`) / フロントビルド (`npm run build`) / Rust ビルド (`cargo build`) すべて PASS
+
+### 14.5 — 統合テスト + ドキュメント
+
+- [x] E2E 動作確認（実フォルダで集約 → 連番リネーム → UNDO で完全復元）— 総司様の実機確認で完了
+- [x] エッジケース: 異親選択 / 既存名衝突 / 空のプレフィックス / 単一選択 — Phase 14.3 で 15 件のテストで網羅
+- [x] **`README.md` / `README.ja.md` 新規作成**（v1.0.0 メジャーリリースに合わせて、機能一覧 / インストール / ビルド方法 / アーキテクチャ / 謝辞 を網羅）
+- [x] **`RELEASE_NOTES_v1.0.0.md`**（EN+JA）作成、フォルダ集約をハイライト
+- [x] バージョン更新: `package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` を `1.0.0` へ、`Cargo.lock` の naire エントリのみ自動更新
+
+### 仕様メモ
+
+- **v1 制約**: 集約フォルダは選択フォルダと同じ親直下のみ作成。任意の場所への集約は将来検討
+- **連番リネーム省略時の動作**: 移動のみ実行、元のフォルダ名を維持
+- **prefixDirty フラグ**: ユーザが集約名を手動編集したら自動再計算を抑止
+- **UNDO 1 record = 集約 1 回**: CreateDir + 移動×N + 連番リネーム×N を 1 件として扱う
+- **クロスプラットフォーム**: `std::fs::rename` と `std::fs::create_dir` / `remove_dir` は Windows / macOS 共通動作
+
+---
+
+## Naire v1.0.0 リリース
+
+**2026-05-17** — General Availability。Phase 14 完了に合わせてメジャーリリースを実施。
+
+- 全 14 フェーズ完了
+- バックエンドテスト 127 件 PASS
+- README.md / README.ja.md / RELEASE_NOTES_v1.0.0.md を新規作成
+- CI/CD タグプッシュで自動ビルド & ドラフトリリース作成

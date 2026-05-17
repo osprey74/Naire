@@ -14,7 +14,7 @@ Windows / macOS 対応の一括リネームツール。正規表現・ワイル�
 - REDO
 - ネットワークドライブのブラウズ
 - スクリプト機能（FR の VBScript/JScript 拡張、Excel COM 連携等）
-- フォルダ振り分け（リネーム時に別フォルダへ移動）
+- 汎用フォルダ振り分け（リネーム時に別フォルダへ移動）— ただし「**フォルダ集約**」機能（Phase 14）のみ唯一の例外。複数フォルダを共通プレフィックスでまとめる用途に限定
 - `*` ランダム数字変数
 
 ## 命名規則
@@ -49,6 +49,11 @@ Windows / macOS 対応の一括リネームツール。正規表現・ワイル�
 - マクロ IO（インポート／エクスポート）は `macro_io.rs` に集約する
 - インポート時は `id` を必ず再生成する（重複防止）
 - エクスポートは単一マクロ＝オブジェクト、複数＝配列で書き分ける
+- フォルダ集約は `src-tauri/src/rename/group.rs` に集約。`longest_common_prefix` は char 単位比較 + 末尾 `' '` / `U+3000` のみ trim
+- 集約フォルダは選択フォルダと**同じ親直下**に作成（異ボリューム移動を発生させない）。選択フォルダが異なる親に分散している場合はエラー停止
+- `RenameOp` は enum 化（`Rename` / `CreateDir`）。`CreateDir` op は `execute_group` のみが生成し、UNDO 時は空フォルダの `remove_dir` で逆適用する
+- 集約後の連番リネームは定型 #1 `add_seq_str` と同一動作（`{prefix}{seq}{suffix}` で stem 置換）。フォルダ名昇順でソートしてから順に番号付け
+- 集約タブ UI は `target=folder` かつ選択フォルダ数 ≥ 2 のときのみ有効。それ以外は disabled
 
 ## Task Management
 
@@ -58,8 +63,8 @@ Windows / macOS 対応の一括リネームツール。正規表現・ワイル�
 
 ## Documentation
 
-- **docs_to_update**: 未定（README は実装初期段階で追加予定）
-- **doc_pairs**: 未定
+- **docs_to_update**: `README.md` / `README.ja.md`（v1.0.0 で新規作成、機能追加時は両言語版を同時更新）
+- **doc_pairs**: `README.md` ⇔ `README.ja.md`、`docs/MACRO_REFERENCE.md` ⇔ `docs/MACRO_REFERENCE.ja.md`
 
 ## Versioning
 

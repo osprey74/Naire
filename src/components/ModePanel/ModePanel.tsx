@@ -5,10 +5,16 @@ import BuiltinMenu from "./builtin/BuiltinMenu";
 import BuiltinParams from "./builtin/BuiltinParams";
 import type { BuiltinKind } from "./builtin/builtin-defaults";
 import MacroPanel from "./macro/MacroPanel";
-import type { BuiltinOp, Macro } from "../../types/rename";
+import GroupPanel, { type GroupState } from "./group/GroupPanel";
+import type {
+  BuiltinOp,
+  GroupPreview,
+  Macro,
+  TargetType,
+} from "../../types/rename";
 import styles from "./ModePanel.module.css";
 
-type Mode = "builtin" | "advanced" | "macro";
+type Mode = "builtin" | "advanced" | "macro" | "group";
 type AdvancedTab = "wildcard" | "regex" | "char_convert";
 
 export interface ModePanelProps {
@@ -43,6 +49,15 @@ export interface ModePanelProps {
   onMacroStepForward: () => void;
   onMacroApplyAll: () => void;
   onMacroReset: () => void;
+  // ── Phase 14: フォルダ集約 ───────────────────────────
+  target: TargetType;
+  groupSelectedCount: number;
+  groupState: GroupState;
+  onGroupStateChange: (next: GroupState) => void;
+  groupPreview: GroupPreview | null;
+  groupComputing: boolean;
+  onGroupExecute: () => void;
+  canGroupExecute: boolean;
 }
 
 export default function ModePanel(props: ModePanelProps) {
@@ -78,6 +93,14 @@ export default function ModePanel(props: ModePanelProps) {
     onMacroStepForward,
     onMacroApplyAll,
     onMacroReset,
+    target,
+    groupSelectedCount,
+    groupState,
+    onGroupStateChange,
+    groupPreview,
+    groupComputing,
+    onGroupExecute,
+    canGroupExecute,
   } = props;
 
   return (
@@ -103,6 +126,13 @@ export default function ModePanel(props: ModePanelProps) {
           onClick={() => onModeChange("macro")}
         >
           マクロ
+        </button>
+        <button
+          type="button"
+          className={`${styles.tab} ${mode === "group" ? styles.active : ""}`}
+          onClick={() => onModeChange("group")}
+        >
+          集約
         </button>
       </div>
 
@@ -194,6 +224,18 @@ export default function ModePanel(props: ModePanelProps) {
             onStepForward={onMacroStepForward}
             onApplyAll={onMacroApplyAll}
             onReset={onMacroReset}
+          />
+        )}
+        {mode === "group" && (
+          <GroupPanel
+            target={target}
+            selectedCount={groupSelectedCount}
+            state={groupState}
+            onChange={onGroupStateChange}
+            preview={groupPreview}
+            computing={groupComputing}
+            onExecute={onGroupExecute}
+            canExecute={canGroupExecute}
           />
         )}
       </div>

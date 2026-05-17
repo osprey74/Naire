@@ -9,6 +9,9 @@ use crate::filter::DisplayFilter;
 use crate::rename::advanced::{apply_regex, wildcard_to_regex};
 use crate::rename::builtin::{apply_builtin, BuiltinOp};
 use crate::rename::char_convert;
+use crate::rename::group::{
+    build_plan, find_renamed_collision, longest_common_prefix, GroupRenameSpec,
+};
 use crate::rename::sequence::Numbering;
 use crate::rename::undo::{undo_ops, OpView};
 use crate::rename::variables::FileContext;
@@ -29,10 +32,20 @@ pub struct PreviewItem {
     pub is_changed: bool,
 }
 
+/// UNDO スタック上の 1 操作を表す。Phase 14 から enum 化。
+/// - `Rename`: 通常のリネーム / 移動（既存コマンドが生成）
+/// - `CreateDir`: フォルダ作成（`execute_group` のみが生成）
+///
+/// JSON 形式（serde `tag = "type"`、`rename_all = "snake_case"`）:
+/// - `{"type": "rename", "old_path": "...", "new_path": "..."}`
+/// - `{"type": "create_dir", "path": "..."}`
+///
+/// UNDO スタックは永続化しないため、シリアライズ形式の後方互換性は不要。
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct RenameOp {
-    pub old_path: String,
-    pub new_path: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RenameOp {
+    Rename { old_path: String, new_path: String },
+    CreateDir { path: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -418,7 +431,7 @@ pub async fn execute_rename(
                 ops.len()
             )
         })?;
-        ops.push(RenameOp {
+        ops.push(RenameOp::Rename {
             old_path,
             new_path,
         });
@@ -610,7 +623,7 @@ pub async fn apply_rename_to_filesystem(
                 ops.len()
             )
         })?;
-        ops.push(RenameOp {
+        ops.push(RenameOp::Rename {
             old_path,
             new_path,
         });
@@ -629,12 +642,342 @@ pub async fn undo_rename(record: RenameRecord) -> Result<(), String> {
     let views: Vec<OpView<'_>> = record
         .ops
         .iter()
-        .map(|op| OpView {
-            old_path: &op.old_path,
-            new_path: &op.new_path,
+        .map(|op| match op {
+            RenameOp::Rename { old_path, new_path } => OpView::Rename {
+                old_path,
+                new_path,
+            },
+            RenameOp::CreateDir { path } => OpView::CreateDir { path },
         })
         .collect();
     undo_ops(&views)
+}
+
+// ── フォルダ集約（Phase 14） ─────────────────────────────────────
+
+/// 集約後の連番リネーム指定。定型 #1 `add_seq_str` と同一動作。
+/// `numbering` はグローバル SequenceConfig から継承する想定（UI が現在値を送る）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GroupRenameDto {
+    pub prefix: String,
+    pub suffix: String,
+    pub digits: u32,
+    pub start: u64,
+    pub step: u64,
+    pub numbering: String,
+}
+
+/// 集約プレビューに含める 1 件分の情報。
+#[derive(Serialize, Clone, Debug)]
+pub struct GroupItemPreview {
+    pub original_name: String,
+    pub renamed: String,
+    pub final_path: String,
+}
+
+/// 集約プレビュー結果。エラー時は `error: Some` で `items` は空。
+/// `conflict` は集約フォルダ名が既存と衝突した場合に true（プレビュー自体は成立）。
+#[derive(Serialize, Clone, Debug)]
+pub struct GroupPreview {
+    pub parent_folder: String,
+    pub common_prefix: String,
+    pub group_name: String,
+    pub conflict: bool,
+    pub items: Vec<GroupItemPreview>,
+    pub error: Option<String>,
+}
+
+fn make_error_preview(
+    parent_folder: String,
+    common_prefix: String,
+    group_name: String,
+    msg: impl Into<String>,
+) -> GroupPreview {
+    GroupPreview {
+        parent_folder,
+        common_prefix,
+        group_name,
+        conflict: false,
+        items: vec![],
+        error: Some(msg.into()),
+    }
+}
+
+fn dto_to_spec(dto: &GroupRenameDto) -> Result<GroupRenameSpec, String> {
+    if dto.digits == 0 {
+        return Err("連番桁数は 1 以上で指定してください".into());
+    }
+    if dto.step == 0 {
+        return Err("連番ステップは 1 以上で指定してください".into());
+    }
+    Ok(GroupRenameSpec {
+        prefix: dto.prefix.clone(),
+        suffix: dto.suffix.clone(),
+        digits: dto.digits as usize,
+        start: dto.start,
+        step: dto.step,
+        numbering: Numbering::parse(&dto.numbering),
+    })
+}
+
+/// 選択フォルダから共通プレフィックスとプレビュー情報を返す（FS は変更しない）。
+///
+/// `group_name` が None の場合は共通プレフィックスを既定値として使用。
+/// バリデーション失敗時も Ok を返し、`error` フィールドにメッセージを格納する。
+#[tauri::command]
+pub async fn compute_group_preview(
+    parent_folder: String,
+    selected_names: Vec<String>,
+    group_name: Option<String>,
+    rename: Option<GroupRenameDto>,
+) -> Result<GroupPreview, String> {
+    compute_group_preview_impl(parent_folder, selected_names, group_name, rename)
+}
+
+/// `compute_group_preview` の同期実装（テスト用に分離）。
+pub(crate) fn compute_group_preview_impl(
+    parent_folder: String,
+    selected_names: Vec<String>,
+    group_name: Option<String>,
+    rename: Option<GroupRenameDto>,
+) -> Result<GroupPreview, String> {
+    // 共通プレフィックス算出（選択 0/1 件でも値は出せる）
+    let refs: Vec<&str> = selected_names.iter().map(|s| s.as_str()).collect();
+    let common_prefix = longest_common_prefix(&refs);
+
+    // 解決される group_name (UI 入力優先、None なら共通プレフィックス)
+    let resolved_group_name = group_name
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| common_prefix.clone());
+
+    // 選択件数バリデーション
+    if selected_names.is_empty() {
+        return Ok(make_error_preview(
+            parent_folder,
+            common_prefix,
+            resolved_group_name,
+            "選択フォルダがありません",
+        ));
+    }
+    if selected_names.len() < 2 {
+        return Ok(make_error_preview(
+            parent_folder,
+            common_prefix,
+            resolved_group_name,
+            "集約には 2 件以上のフォルダ選択が必要です",
+        ));
+    }
+
+    // 全選択肢が parent_folder 直下に実在するフォルダか
+    let parent_path = Path::new(&parent_folder);
+    if !parent_path.is_dir() {
+        return Ok(make_error_preview(
+            parent_folder.clone(),
+            common_prefix,
+            resolved_group_name,
+            format!("親フォルダが見つかりません: {}", parent_folder),
+        ));
+    }
+    for name in &selected_names {
+        let full = parent_path.join(name);
+        if !full.exists() {
+            return Ok(make_error_preview(
+                parent_folder.clone(),
+                common_prefix,
+                resolved_group_name,
+                format!("フォルダが見つかりません: {}", name),
+            ));
+        }
+        if !full.is_dir() {
+            return Ok(make_error_preview(
+                parent_folder.clone(),
+                common_prefix,
+                resolved_group_name,
+                format!("フォルダではありません: {}", name),
+            ));
+        }
+    }
+
+    // group_name の妥当性
+    if resolved_group_name.is_empty() {
+        return Ok(make_error_preview(
+            parent_folder,
+            common_prefix,
+            resolved_group_name,
+            "集約フォルダ名が空です",
+        ));
+    }
+    if selected_names.iter().any(|n| n == &resolved_group_name) {
+        return Ok(make_error_preview(
+            parent_folder,
+            common_prefix,
+            resolved_group_name,
+            "集約フォルダ名が選択中のフォルダ名と同一です",
+        ));
+    }
+
+    // rename DTO → Spec 変換
+    let rename_spec: Option<GroupRenameSpec> = match rename {
+        Some(r) => match dto_to_spec(&r) {
+            Ok(spec) => Some(spec),
+            Err(msg) => {
+                return Ok(make_error_preview(
+                    parent_folder,
+                    common_prefix,
+                    resolved_group_name,
+                    msg,
+                ));
+            }
+        },
+        None => None,
+    };
+
+    // 計画を構築
+    let plan = build_plan(
+        &parent_folder,
+        &selected_names,
+        &resolved_group_name,
+        rename_spec.as_ref(),
+    );
+
+    // 連番リネーム後の重複チェック
+    if let Some(dup) = find_renamed_collision(&plan) {
+        return Ok(GroupPreview {
+            parent_folder,
+            common_prefix,
+            group_name: resolved_group_name,
+            conflict: false,
+            items: plan
+                .items
+                .iter()
+                .map(|i| GroupItemPreview {
+                    original_name: i.original_name.clone(),
+                    renamed: i.renamed.clone(),
+                    final_path: i.final_path.clone(),
+                })
+                .collect(),
+            error: Some(format!("連番リネーム結果が重複します: {}", dup)),
+        });
+    }
+
+    // 衝突判定（集約フォルダが既存）
+    let group_full = parent_path.join(&resolved_group_name);
+    let conflict = group_full.exists();
+
+    Ok(GroupPreview {
+        parent_folder,
+        common_prefix,
+        group_name: resolved_group_name,
+        conflict,
+        items: plan
+            .items
+            .into_iter()
+            .map(|i| GroupItemPreview {
+                original_name: i.original_name,
+                renamed: i.renamed,
+                final_path: i.final_path,
+            })
+            .collect(),
+        error: None,
+    })
+}
+
+/// 集約フォルダ作成 + 選択フォルダ移動 + 内部の連番リネームを実行する。
+///
+/// 内部的に `compute_group_preview` を再利用してバリデーションを通したあと、
+/// 計画通りに `mkdir` + `std::fs::rename` を実行する。move と rename は同一の
+/// `std::fs::rename` 呼び出しに統合（最終パスへ直接移動）。
+///
+/// 戻り値の `RenameRecord` には `CreateDir + Rename×N` が記録され、UNDO で
+/// 完全に巻き戻せる。
+#[tauri::command]
+pub async fn execute_group(
+    parent_folder: String,
+    selected_names: Vec<String>,
+    group_name: String,
+    rename: Option<GroupRenameDto>,
+) -> Result<RenameRecord, String> {
+    execute_group_impl(parent_folder, selected_names, group_name, rename)
+}
+
+/// `execute_group` の同期実装（テスト用に分離）。
+pub(crate) fn execute_group_impl(
+    parent_folder: String,
+    selected_names: Vec<String>,
+    group_name: String,
+    rename: Option<GroupRenameDto>,
+) -> Result<RenameRecord, String> {
+    // バリデーション（プレビュー経由）
+    let preview = compute_group_preview_impl(
+        parent_folder.clone(),
+        selected_names.clone(),
+        Some(group_name.clone()),
+        rename.clone(),
+    )?;
+
+    if let Some(err) = preview.error {
+        return Err(err);
+    }
+    if preview.conflict {
+        return Err(format!(
+            "集約フォルダ名が既存と衝突します: {}",
+            preview.group_name
+        ));
+    }
+    if preview.items.is_empty() {
+        return Err("集約対象がありません".into());
+    }
+
+    // 計画を再構築（preview.items は GroupItemPreview なので、ファイル I/O 用に
+    // 元の build_plan を呼び直す方が型変換コストなしで扱いやすい）
+    let rename_spec = match rename {
+        Some(ref r) => Some(dto_to_spec(r)?),
+        None => None,
+    };
+    let plan = build_plan(
+        &parent_folder,
+        &selected_names,
+        &preview.group_name,
+        rename_spec.as_ref(),
+    );
+
+    // 集約フォルダ作成
+    let group_path = Path::new(&plan.group_path).to_path_buf();
+    std::fs::create_dir(&group_path).map_err(|e| {
+        format!(
+            "集約フォルダ作成失敗 {}: {}",
+            group_path.display(),
+            e
+        )
+    })?;
+
+    let mut ops: Vec<RenameOp> = Vec::with_capacity(1 + plan.items.len());
+    ops.push(RenameOp::CreateDir {
+        path: plan.group_path.clone(),
+    });
+
+    // 移動 + 連番リネーム（単一の std::fs::rename で実行）
+    for item in &plan.items {
+        std::fs::rename(&item.original_path, &item.final_path).map_err(|e| {
+            format!(
+                "移動失敗 {} → {}: {} （これまでに {} 件処理済み、CreateDir 含む）",
+                item.original_path,
+                item.final_path,
+                e,
+                ops.len()
+            )
+        })?;
+        ops.push(RenameOp::Rename {
+            old_path: item.original_path.clone(),
+            new_path: item.final_path.clone(),
+        });
+    }
+
+    Ok(RenameRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Local::now().to_rfc3339(),
+        ops,
+    })
 }
 
 #[tauri::command]
@@ -779,4 +1122,377 @@ pub fn list_folder_tree(path: Option<String>) -> Result<Vec<DirNode>, String> {
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(out)
+}
+
+#[cfg(test)]
+mod group_tests {
+    //! Phase 14.3 — フォルダ集約 (compute_group_preview / execute_group) 統合テスト。
+    //! Tauri コマンドの async ラッパーは pass-through なので、同期 `_impl` 関数を直接テストする。
+
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn tempdir() -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "naire-group-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn make_dirs(parent: &PathBuf, names: &[&str]) {
+        for n in names {
+            fs::create_dir(parent.join(n)).unwrap();
+        }
+    }
+
+    fn default_rename() -> GroupRenameDto {
+        GroupRenameDto {
+            prefix: String::new(),
+            suffix: String::new(),
+            digits: 2,
+            start: 1,
+            step: 1,
+            numbering: "decimal".into(),
+        }
+    }
+
+    // ── compute_group_preview ─────────────────────────────────────
+
+    #[test]
+    fn preview_normal_case() {
+        let dir = tempdir();
+        make_dirs(
+            &dir,
+            &[
+                "[A] Title 第01巻",
+                "[A] Title 第02巻",
+                "[A] Title 第03巻",
+            ],
+        );
+        let parent = dir.to_string_lossy().into_owned();
+        let names: Vec<String> = vec![
+            "[A] Title 第01巻".into(),
+            "[A] Title 第02巻".into(),
+            "[A] Title 第03巻".into(),
+        ];
+
+        let preview = compute_group_preview_impl(
+            parent.clone(),
+            names,
+            None,
+            Some(default_rename()),
+        )
+        .unwrap();
+
+        assert_eq!(preview.error, None);
+        assert!(!preview.conflict);
+        assert_eq!(preview.common_prefix, "[A] Title");
+        assert_eq!(preview.group_name, "[A] Title");
+        assert_eq!(preview.items.len(), 3);
+        assert_eq!(preview.items[0].renamed, "01");
+        assert_eq!(preview.items[1].renamed, "02");
+        assert_eq!(preview.items[2].renamed, "03");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_with_prefix_suffix() {
+        let dir = tempdir();
+        make_dirs(&dir, &["a", "b"]);
+        let parent = dir.to_string_lossy().into_owned();
+        let rename = GroupRenameDto {
+            prefix: "第".into(),
+            suffix: "巻".into(),
+            digits: 2,
+            start: 1,
+            step: 1,
+            numbering: "decimal".into(),
+        };
+
+        let preview = compute_group_preview_impl(
+            parent,
+            vec!["a".into(), "b".into()],
+            Some("group".into()),
+            Some(rename),
+        )
+        .unwrap();
+
+        assert_eq!(preview.error, None);
+        assert_eq!(preview.items[0].renamed, "第01巻");
+        assert_eq!(preview.items[1].renamed, "第02巻");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_empty_selection_errors() {
+        let preview =
+            compute_group_preview_impl("/tmp".into(), vec![], None, None).unwrap();
+        assert!(preview.error.as_deref().unwrap().contains("選択フォルダ"));
+        assert!(preview.items.is_empty());
+    }
+
+    #[test]
+    fn preview_single_selection_errors() {
+        let preview = compute_group_preview_impl(
+            "/tmp".into(),
+            vec!["only".into()],
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(preview.error.as_deref().unwrap().contains("2 件以上"));
+    }
+
+    #[test]
+    fn preview_missing_folder_errors() {
+        let dir = tempdir();
+        // 親フォルダは存在するが、子フォルダは作らない
+        let parent = dir.to_string_lossy().into_owned();
+        let preview = compute_group_preview_impl(
+            parent,
+            vec!["nope1".into(), "nope2".into()],
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(preview.error.as_deref().unwrap().contains("見つかりません"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_file_not_dir_errors() {
+        let dir = tempdir();
+        fs::write(dir.join("a"), "content").unwrap();
+        fs::create_dir(dir.join("b")).unwrap();
+        let parent = dir.to_string_lossy().into_owned();
+        let preview = compute_group_preview_impl(
+            parent,
+            vec!["a".into(), "b".into()],
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(preview.error.as_deref().unwrap().contains("フォルダではありません"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_conflict_when_group_name_exists() {
+        let dir = tempdir();
+        make_dirs(&dir, &["a", "b", "existing"]);
+        let parent = dir.to_string_lossy().into_owned();
+        let preview = compute_group_preview_impl(
+            parent,
+            vec!["a".into(), "b".into()],
+            Some("existing".into()),
+            Some(default_rename()),
+        )
+        .unwrap();
+        assert_eq!(preview.error, None);
+        assert!(preview.conflict);
+        // プレビューアイテムは返る（衝突情報も含めて UI が判断）
+        assert_eq!(preview.items.len(), 2);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_rename_duplicate_errors() {
+        let dir = tempdir();
+        make_dirs(&dir, &["a", "b"]);
+        let parent = dir.to_string_lossy().into_owned();
+        let mut r = default_rename();
+        r.step = 1;
+        r.start = 1;
+        // step=0 は dto_to_spec で弾かれるので、ここでは強制的に重複を起こすために
+        // prefix/suffix が同じになるパターンを作る…が、build_plan は idx で区別するので
+        // 連番値が違えば重複しない。step=0 を渡せばエラーになる:
+        r.step = 0;
+        let preview = compute_group_preview_impl(
+            parent,
+            vec!["a".into(), "b".into()],
+            Some("group".into()),
+            Some(r),
+        )
+        .unwrap();
+        assert!(preview.error.as_deref().unwrap().contains("ステップ"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_empty_group_name_errors() {
+        let dir = tempdir();
+        make_dirs(&dir, &["a", "b"]);
+        let parent = dir.to_string_lossy().into_owned();
+        let preview = compute_group_preview_impl(
+            parent,
+            vec!["a".into(), "b".into()],
+            Some("   ".into()),
+            None,
+        )
+        .unwrap();
+        assert!(preview.error.as_deref().unwrap().contains("集約フォルダ名"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_no_rename_keeps_original_names() {
+        let dir = tempdir();
+        make_dirs(&dir, &["a", "b"]);
+        let parent = dir.to_string_lossy().into_owned();
+        let preview = compute_group_preview_impl(
+            parent,
+            vec!["a".into(), "b".into()],
+            Some("group".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(preview.error, None);
+        assert_eq!(preview.items[0].renamed, "a");
+        assert_eq!(preview.items[1].renamed, "b");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── execute_group ──────────────────────────────────────────────
+
+    #[test]
+    fn execute_normal_case() {
+        let dir = tempdir();
+        let names = ["[A] Title 第03巻", "[A] Title 第01巻", "[A] Title 第02巻"];
+        make_dirs(&dir, &names);
+        let parent = dir.to_string_lossy().into_owned();
+
+        let record = execute_group_impl(
+            parent.clone(),
+            names.iter().map(|s| s.to_string()).collect(),
+            "[A] Title".into(),
+            Some(default_rename()),
+        )
+        .unwrap();
+
+        // 集約フォルダが作成され、3 フォルダが連番で配置される
+        let group_dir = dir.join("[A] Title");
+        assert!(group_dir.is_dir());
+        assert!(group_dir.join("01").is_dir());
+        assert!(group_dir.join("02").is_dir());
+        assert!(group_dir.join("03").is_dir());
+        // 元のフォルダはもう存在しない
+        for name in &names {
+            assert!(!dir.join(name).exists());
+        }
+
+        // RenameRecord は CreateDir 1 件 + Rename 3 件 = 4 件
+        assert_eq!(record.ops.len(), 4);
+        match &record.ops[0] {
+            RenameOp::CreateDir { path } => assert!(path.contains("[A] Title")),
+            _ => panic!("最初の op は CreateDir のはず"),
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn execute_blocked_by_conflict() {
+        let dir = tempdir();
+        make_dirs(&dir, &["a", "b", "existing"]);
+        let parent = dir.to_string_lossy().into_owned();
+
+        let result = execute_group_impl(
+            parent,
+            vec!["a".into(), "b".into()],
+            "existing".into(),
+            Some(default_rename()),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("衝突"));
+        // 既存フォルダは変更されていない
+        assert!(dir.join("a").exists());
+        assert!(dir.join("b").exists());
+        assert!(dir.join("existing").exists());
+        // existing の中身は空のまま
+        assert_eq!(fs::read_dir(dir.join("existing")).unwrap().count(), 0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn execute_blocked_when_selection_invalid() {
+        let dir = tempdir();
+        make_dirs(&dir, &["a"]);
+        let parent = dir.to_string_lossy().into_owned();
+        // 選択 1 件のみ → エラー
+        let result = execute_group_impl(
+            parent,
+            vec!["a".into()],
+            "group".into(),
+            Some(default_rename()),
+        );
+        assert!(result.is_err());
+        assert!(!dir.join("group").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn execute_no_rename_just_moves() {
+        let dir = tempdir();
+        make_dirs(&dir, &["a", "b"]);
+        let parent = dir.to_string_lossy().into_owned();
+        let record = execute_group_impl(
+            parent,
+            vec!["a".into(), "b".into()],
+            "group".into(),
+            None,
+        )
+        .unwrap();
+        let group = dir.join("group");
+        assert!(group.join("a").is_dir());
+        assert!(group.join("b").is_dir());
+        // CreateDir + Rename×2 = 3 ops
+        assert_eq!(record.ops.len(), 3);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── execute_group + undo_rename round trip ───────────────────
+
+    #[test]
+    fn execute_and_undo_round_trip() {
+        let dir = tempdir();
+        let names = ["[A] Title 第01巻", "[A] Title 第02巻", "[A] Title 第03巻"];
+        make_dirs(&dir, &names);
+        let parent = dir.to_string_lossy().into_owned();
+
+        let record = execute_group_impl(
+            parent.clone(),
+            names.iter().map(|s| s.to_string()).collect(),
+            "[A] Title".into(),
+            Some(default_rename()),
+        )
+        .unwrap();
+
+        // UNDO
+        let views: Vec<OpView<'_>> = record
+            .ops
+            .iter()
+            .map(|op| match op {
+                RenameOp::Rename { old_path, new_path } => OpView::Rename {
+                    old_path,
+                    new_path,
+                },
+                RenameOp::CreateDir { path } => OpView::CreateDir { path },
+            })
+            .collect();
+        undo_ops(&views).unwrap();
+
+        // 元の状態に戻っていること
+        for name in &names {
+            assert!(dir.join(name).is_dir());
+        }
+        assert!(!dir.join("[A] Title").exists());
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -11,6 +11,7 @@ import ModePanel, {
 import SequencePanel from "./components/SequencePanel";
 import MacroEditor from "./components/ModePanel/macro/MacroEditor";
 import AboutDialog from "./components/AboutDialog";
+import type { GroupState } from "./components/ModePanel/group/GroupPanel";
 import { usePreview } from "./hooks/usePreview";
 import { persistConfig, useLoadConfig } from "./hooks/useConfig";
 import { pushHistory } from "./components/FilterCombo";
@@ -21,6 +22,8 @@ import {
 import type {
   AppConfig,
   BuiltinOp,
+  GroupPreview,
+  GroupRenameDto,
   Macro,
   PreviewColumnWidths,
   PreviewItem,
@@ -44,7 +47,26 @@ const DEFAULT_COLUMN_WIDTHS: PreviewColumnWidths = {
   renamed: 240,
 };
 
+const DEFAULT_GROUP_STATE: GroupState = {
+  groupName: "",
+  nameDirty: false,
+  renameEnabled: true,
+  prefix: "",
+  suffix: "",
+  digits: 2,
+  start: 1,
+  step: 1,
+};
+
 type Notice = { kind: "success" | "error"; message: string };
+
+// パスから親ディレクトリ部分を取り出す（Windows / POSIX 両対応）。
+// 末尾セパレータの直前で切る。セパレータが見つからなければ空文字。
+function dirname(p: string): string {
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  if (idx < 0) return "";
+  return p.substring(0, idx);
+}
 
 export default function App() {
   const { loaded: configLoaded, initialConfig } = useLoadConfig();
@@ -74,6 +96,10 @@ export default function App() {
   const [editingMacro, setEditingMacro] = useState<Macro | null>(null);
   const [macroItems, setMacroItems] = useState<StepItem[] | null>(null);
   const [macroStepIndex, setMacroStepIndex] = useState(0);
+  // ── フォルダ集約関連の state（Phase 14）─────────────────────
+  const [groupState, setGroupState] = useState<GroupState>(DEFAULT_GROUP_STATE);
+  const [groupPreview, setGroupPreview] = useState<GroupPreview | null>(null);
+  const [groupComputing, setGroupComputing] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [executing, setExecuting] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -156,18 +182,156 @@ export default function App() {
   }, [macroItems]);
 
   const isMacroMode = mode === "macro";
+  const isGroupMode = mode === "group";
   const currentMacro = isMacroMode
     ? macros.find((m) => m.id === currentMacroId) ?? null
     : null;
 
-  // 表示する items: マクロモード中で macroItems があればそれ、それ以外は preview
-  const displayItems = isMacroMode && macroItems ? macroAsPreview : preview.items;
-  const displayLoading = isMacroMode ? executing : preview.loading;
+  // ── フォルダ集約：選択から親フォルダ・名前を導出 ────────────
+  // 選択された PreviewItem を抽出 → 同一親に属しているか検証 → 親と names を返す。
+  const groupSelection = useMemo(() => {
+    const selectedItems = lastItems.filter((i) => selectedPaths.has(i.path));
+    if (selectedItems.length === 0) {
+      return { parent: "", names: [] as string[], sameParent: true };
+    }
+    const parents = new Set(selectedItems.map((i) => dirname(i.path)));
+    const sameParent = parents.size === 1;
+    return {
+      parent: sameParent ? dirname(selectedItems[0].path) : "",
+      names: selectedItems.map((i) => i.original),
+      sameParent,
+    };
+  }, [lastItems, selectedPaths]);
+
+  // 集約モード時に groupPreview を計算（state 変更で debounce 再計算）
+  const groupRenameDto = useMemo<GroupRenameDto | null>(() => {
+    if (!groupState.renameEnabled) return null;
+    return {
+      prefix: groupState.prefix,
+      suffix: groupState.suffix,
+      digits: groupState.digits,
+      start: groupState.start,
+      step: groupState.step,
+      numbering: seq.numbering,
+    };
+  }, [groupState, seq.numbering]);
+
+  useEffect(() => {
+    if (!isGroupMode) {
+      setGroupPreview(null);
+      return;
+    }
+    if (target !== "folder") {
+      setGroupPreview(null);
+      return;
+    }
+    if (groupSelection.names.length < 2 || !groupSelection.sameParent) {
+      setGroupPreview(null);
+      return;
+    }
+    const t = setTimeout(async () => {
+      setGroupComputing(true);
+      try {
+        const preview = await invoke<GroupPreview>("compute_group_preview", {
+          parentFolder: groupSelection.parent,
+          selectedNames: groupSelection.names,
+          groupName: groupState.nameDirty ? groupState.groupName : null,
+          rename: groupRenameDto,
+        });
+        setGroupPreview(preview);
+        // 自動算出時は groupState.groupName を共通プレフィックスに同期
+        if (!groupState.nameDirty && preview.common_prefix !== groupState.groupName) {
+          setGroupState((prev) =>
+            prev.nameDirty
+              ? prev
+              : { ...prev, groupName: preview.common_prefix },
+          );
+        }
+      } catch (e) {
+        setGroupPreview({
+          parent_folder: groupSelection.parent,
+          common_prefix: "",
+          group_name: groupState.groupName,
+          conflict: false,
+          items: [],
+          error: String(e),
+        });
+      } finally {
+        setGroupComputing(false);
+      }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [
+    isGroupMode,
+    target,
+    groupSelection.parent,
+    groupSelection.names.join(""),
+    groupSelection.sameParent,
+    groupState.groupName,
+    groupState.nameDirty,
+    groupRenameDto,
+  ]);
+
+  // 集約モードのフォルダ非選択時 / 異親選択時 / 件数不足時のメッセージ表示用
+  const groupPreviewError = useMemo<string | null>(() => {
+    if (!isGroupMode) return null;
+    if (target !== "folder") return null; // GroupPanel 側で案内
+    if (groupSelection.names.length === 0) return null; // 同上
+    if (groupSelection.names.length < 2) return null; // 同上
+    if (!groupSelection.sameParent) {
+      return "選択フォルダが複数の親に分散しています。同じ親フォルダの下から選択してください。";
+    }
+    return null;
+  }, [isGroupMode, target, groupSelection.names.length, groupSelection.sameParent]);
+
+  // GroupPanel 表示用の合成 preview（異親エラーは preview に上書き反映）
+  const effectiveGroupPreview = useMemo<GroupPreview | null>(() => {
+    if (!isGroupMode) return null;
+    if (groupPreviewError) {
+      return {
+        parent_folder: "",
+        common_prefix: "",
+        group_name: groupState.groupName,
+        conflict: false,
+        items: [],
+        error: groupPreviewError,
+      };
+    }
+    return groupPreview;
+  }, [isGroupMode, groupPreviewError, groupPreview, groupState.groupName]);
+
+  // 表示する items: マクロモード中は macroAsPreview、それ以外は通常 preview
+  // 集約モードでは PreviewPanel は通常のフォルダ一覧を表示し続ける
+  // （items を切り替えると PreviewPanel が selectedPaths を path 不一致で間引いてしまうため）。
+  // 集約プレビューは GroupPanel 内の表で表示する。
+  const displayItems = isMacroMode && macroItems
+    ? macroAsPreview
+    : preview.items;
+  const displayLoading = isMacroMode
+    ? executing
+    : isGroupMode
+      ? preview.loading || groupComputing || executing
+      : preview.loading;
   const displayError = isMacroMode ? null : preview.error;
 
   const hasChanges = displayItems.some((i) => i.is_changed);
-  const canRename = !!folder && hasChanges && !displayLoading && !executing;
+  // 集約モードは独自の「集約実行」ボタンを持つため、ActionBar の「リネーム実行」は無効化
+  const canRename =
+    !isGroupMode && !!folder && hasChanges && !displayLoading && !executing;
   const canUndo = undoStack.length > 0 && !executing;
+
+  // 集約モード: 「集約実行」可能か
+  const canGroupExecute = !!(
+    isGroupMode &&
+    target === "folder" &&
+    groupSelection.sameParent &&
+    groupSelection.names.length >= 2 &&
+    groupPreview &&
+    !groupPreview.error &&
+    !groupPreview.conflict &&
+    !groupComputing &&
+    !executing
+  );
 
   const onRename = async () => {
     if (!canRename) return;
@@ -206,6 +370,33 @@ export default function App() {
         setMacroItems(null);
         setMacroStepIndex(0);
       }
+      preview.reload();
+    } catch (e) {
+      setNotice({ kind: "error", message: String(e) });
+    } finally {
+      setExecuting(false);
+    }
+  };
+
+  const onGroupExecute = async () => {
+    if (!canGroupExecute || !groupPreview) return;
+    setExecuting(true);
+    try {
+      const record = await invoke<RenameRecord>("execute_group", {
+        parentFolder: groupSelection.parent,
+        selectedNames: groupSelection.names,
+        groupName: groupPreview.group_name,
+        rename: groupRenameDto,
+      });
+      setUndoStack((stack) => [...stack, record].slice(-20));
+      setNotice({
+        kind: "success",
+        message: `${groupSelection.names.length} 件のフォルダを「${groupPreview.group_name}」に集約しました`,
+      });
+      // 集約状態をリセット
+      setSelectedPaths(new Set());
+      setGroupState(DEFAULT_GROUP_STATE);
+      setGroupPreview(null);
       preview.reload();
     } catch (e) {
       setNotice({ kind: "error", message: String(e) });
@@ -327,6 +518,20 @@ export default function App() {
       setMacroStepIndex(0);
     }
   }, [mode]);
+
+  // 集約モード以外に切り替えたら集約状態をリセット
+  useEffect(() => {
+    if (mode !== "group") {
+      setGroupState(DEFAULT_GROUP_STATE);
+      setGroupPreview(null);
+    }
+  }, [mode]);
+
+  // フォルダ / target / 再帰条件 / フィルタが変わったら集約状態もリセット
+  useEffect(() => {
+    setGroupState(DEFAULT_GROUP_STATE);
+    setGroupPreview(null);
+  }, [folder, target, recursive, depth, filter]);
 
   const initMacroItems = async (): Promise<StepItem[] | null> => {
     if (!folder) {
@@ -565,6 +770,14 @@ export default function App() {
             onMacroStepForward={onMacroStepForward}
             onMacroApplyAll={onMacroApplyAll}
             onMacroReset={onMacroReset}
+            target={target}
+            groupSelectedCount={groupSelection.names.length}
+            groupState={groupState}
+            onGroupStateChange={setGroupState}
+            groupPreview={effectiveGroupPreview}
+            groupComputing={groupComputing}
+            onGroupExecute={onGroupExecute}
+            canGroupExecute={canGroupExecute}
           />
           <SequencePanel seq={seq} onSeqChange={setSeq} />
         </div>

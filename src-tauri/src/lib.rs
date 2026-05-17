@@ -18,6 +18,8 @@ pub fn run() {
             commands::apply_macro_step,
             commands::apply_rename_to_filesystem,
             commands::undo_rename,
+            commands::compute_group_preview,
+            commands::execute_group,
             commands::export_macros,
             commands::import_macros,
             commands::list_folder_tree,
