@@ -45,9 +45,9 @@ parent/
 
 The grouping workflow respects Naire's safety guarantees: all selected folders must be siblings, the target folder cannot be on a different volume, and the operation is gated by a live preview that surfaces errors and conflicts before execution.
 
-### Design surface stability
+### Compatibility policy
 
-v1.0.0 commits to backwards-compatible evolution of:
+From v1.0.0 onwards, backwards compatibility is maintained for:
 
 - **`AppConfig`** — settings store schema (`tauri-plugin-store`)
 - **Macro JSON format** — single-object and array variants, with auto re-generated UUIDs on import
@@ -101,7 +101,7 @@ Naire は v1.0.0 で **正式リリース** となります。HANDOFF 仕様で�
 
 #### 🆕 フォルダ集約（Phase 14）
 
-v1.0.0 の目玉機能でございます。共通プレフィックスを持つ兄弟フォルダを複数選択し、1 操作で新規親フォルダにまとめつつ、オプションで連番リネームも同時に適用できます。
+v1.0.0 の目玉機能です。共通プレフィックスを持つ兄弟フォルダを複数選択し、1 操作で新規親フォルダにまとめつつ、オプションで連番リネームも同時に適用できます。
 
 **例**: 同じシリーズ名を持つ 3 フォルダ:
 
@@ -130,9 +130,9 @@ parent/
 
 集約ワークフローは Naire の安全保証を遵守します。選択フォルダは全て兄弟である必要があり、集約先は異なるボリュームには作成できず、ライブプレビューで実行前にエラー・衝突を確認できます。
 
-### 設計表面の安定化
+### 互換性ポリシー
 
-v1.0.0 以降は以下について後方互換性を約束します:
+v1.0.0 以降、以下については後方互換性を保ちます:
 
 - **`AppConfig`** — 設定ストアのスキーマ（`tauri-plugin-store`）
 - **マクロ JSON フォーマット** — 単一オブジェクト / 配列の両形式、インポート時に UUID 自動再生成
@@ -163,7 +163,7 @@ v1.0.0 以降は以下について後方互換性を約束します:
 
 ### v0.2.0 からの移行
 
-破壊的変更はございません。既存の設定・マクロライブラリ・ウィンドウ状態はそのまま引き継がれます。UNDO スタックは永続化していない（HANDOFF 仕様）ため、`RenameOp` enum 化の影響もありません。
+破壊的変更はありません。既存の設定・マクロライブラリ・ウィンドウ状態はそのまま引き継がれます。UNDO スタックは永続化していない（HANDOFF 仕様）ため、`RenameOp` enum 化の影響もありません。
 
 ### 既知の制限
 
@@ -172,4 +172,4 @@ v1.0.0 以降は以下について後方互換性を約束します:
 
 ### 今後
 
-v1.0.0 で計画機能セットを完了といたしました。今後のリリースは UX 改善・パフォーマンス・コミュニティからの要望対応に注力してまいります。
+v1.0.0 で計画機能セットの実装は完了です。今後のリリースは UX 改善、パフォーマンス、コミュニティからの要望対応に注力します。
