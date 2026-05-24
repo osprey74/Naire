@@ -47,6 +47,10 @@ const DEFAULT_COLUMN_WIDTHS: PreviewColumnWidths = {
   renamed: 240,
 };
 
+const DEFAULT_LEFT_WIDTH = 220;
+const MIN_LEFT_WIDTH = 140;
+const MAX_LEFT_WIDTH = 800;
+
 const DEFAULT_GROUP_STATE: GroupState = {
   groupName: "",
   nameDirty: false,
@@ -90,6 +94,10 @@ export default function App() {
   const [columnWidths, setColumnWidths] = useState<PreviewColumnWidths>(
     DEFAULT_COLUMN_WIDTHS,
   );
+  const [leftWidth, setLeftWidth] = useState<number>(DEFAULT_LEFT_WIDTH);
+  const [resizing, setResizing] = useState(false);
+  // フォルダツリーへのリロード要求カウンタ。インクリメントで FolderTree が再取得する。
+  const [folderTreeReload, setFolderTreeReload] = useState(0);
   // ── マクロ関連の state ──────────────────────────────────────
   const [macros, setMacros] = useState<Macro[]>([]);
   const [currentMacroId, setCurrentMacroId] = useState<string | null>(null);
@@ -426,6 +434,28 @@ export default function App() {
     }
   };
 
+  // 左ペイン幅のドラッグリサイズ。pointermove/up を window に張る。
+  const onResizerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setResizing(true);
+    const startX = e.clientX;
+    const startWidth = leftWidth;
+    const onMove = (ev: PointerEvent) => {
+      const next = Math.max(
+        MIN_LEFT_WIDTH,
+        Math.min(MAX_LEFT_WIDTH, startWidth + (ev.clientX - startX)),
+      );
+      setLeftWidth(next);
+    };
+    const onUp = () => {
+      setResizing(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   // Ctrl+Z / Cmd+Z で UNDO。INPUT/TEXTAREA フォーカス中はネイティブの
   // 編集 UNDO を尊重するため傍受しない。
   const onUndoRef = useRef(onUndo);
@@ -468,6 +498,13 @@ export default function App() {
       ) {
         setColumnWidths(initialConfig.column_widths);
       }
+      if (typeof initialConfig.left_width === "number") {
+        const w = Math.max(
+          MIN_LEFT_WIDTH,
+          Math.min(MAX_LEFT_WIDTH, initialConfig.left_width),
+        );
+        setLeftWidth(w);
+      }
     }
     setConfigApplied(true);
   }, [configLoaded, initialConfig]);
@@ -487,6 +524,7 @@ export default function App() {
       seq,
       macros,
       column_widths: columnWidths,
+      left_width: leftWidth,
     };
     const t = setTimeout(() => persistConfig(cfg), 500);
     return () => clearTimeout(t);
@@ -502,6 +540,7 @@ export default function App() {
     seq,
     macros,
     columnWidths,
+    leftWidth,
   ]);
 
   // ── マクロハンドラ ──────────────────────────────────────────
@@ -730,10 +769,41 @@ export default function App() {
         onAboutClick={() => setAboutOpen(true)}
       />
 
-      <div className={styles.main}>
+      <div
+        className={styles.main}
+        style={{ ["--left-width" as string]: `${leftWidth}px` }}
+      >
         <div className={styles.left}>
-          <FolderTree folder={folder} onFolderChange={setFolder} />
+          <FolderTree
+            folder={folder}
+            onFolderChange={setFolder}
+            reloadSignal={folderTreeReload}
+            onFolderRenamed={(record) => {
+              setUndoStack((stack) => [...stack, record].slice(-20));
+              setNotice({
+                kind: "success",
+                message: "フォルダ名を変更しました",
+              });
+              preview.reload();
+            }}
+            onFolderDeleted={(path) => {
+              setNotice({
+                kind: "success",
+                message: `「${path}」をゴミ箱へ移動しました`,
+              });
+              preview.reload();
+            }}
+            onError={(msg) => setNotice({ kind: "error", message: msg })}
+          />
         </div>
+        <div
+          className={`${styles.resizer} ${resizing ? styles.resizerActive : ""}`}
+          onPointerDown={onResizerPointerDown}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="フォルダツリーの幅"
+          title="ドラッグして幅を調整"
+        />
 
         <div className={styles.center}>
           <ModePanel
@@ -830,7 +900,10 @@ export default function App() {
         undoCount={undoStack.length}
         onRename={onRename}
         onUndo={onUndo}
-        onClear={() => preview.reload()}
+        onClear={() => {
+          preview.reload();
+          setFolderTreeReload((n) => n + 1);
+        }}
       />
     </div>
   );

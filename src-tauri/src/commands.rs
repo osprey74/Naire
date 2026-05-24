@@ -1000,6 +1000,101 @@ pub struct DirNode {
     pub has_children: bool,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FolderStats {
+    pub file_count: u64,
+    pub total_size: u64,
+}
+
+/// 指定フォルダ配下の総ファイル数と総バイト数を再帰的に集計する。
+/// 権限エラー等で読めなかったエントリはスキップ（呼び出し側に伝播させない）。
+#[tauri::command]
+pub async fn get_folder_stats(path: String) -> Result<FolderStats, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err(format!("フォルダが存在しません: {}", path));
+    }
+    let mut file_count: u64 = 0;
+    let mut total_size: u64 = 0;
+    for entry in WalkDir::new(&p)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_file() {
+            file_count = file_count.saturating_add(1);
+            if let Ok(meta) = entry.metadata() {
+                total_size = total_size.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(FolderStats {
+        file_count,
+        total_size,
+    })
+}
+
+/// 指定フォルダを OS 標準のゴミ箱（Windows: Recycle Bin / macOS: Trash）へ移動する。
+/// 物理削除ではないため、ユーザは OS のゴミ箱から復元可能。アプリ内 UNDO とは別系統。
+#[tauri::command]
+pub async fn move_folder_to_trash(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("フォルダが見つかりません: {}", path));
+    }
+    if !p.is_dir() {
+        return Err(format!("フォルダではありません: {}", path));
+    }
+    trash::delete(&p).map_err(|e| format!("ゴミ箱への移動に失敗しました: {}", e))?;
+    Ok(())
+}
+
+/// 単一フォルダのリネーム。`old_path` の親はそのままで、basename を `new_name` に変更する。
+/// 戻り値は UNDO 可能な `RenameRecord`。
+#[tauri::command]
+pub async fn rename_folder(
+    old_path: String,
+    new_name: String,
+) -> Result<RenameRecord, String> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("フォルダ名が空です".into());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("フォルダ名にパス区切り文字は使えません".into());
+    }
+
+    let old = PathBuf::from(&old_path);
+    if !old.is_dir() {
+        return Err(format!("フォルダが見つかりません: {}", old_path));
+    }
+    let current_name = old
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if current_name == trimmed {
+        return Err("名前が変わっていません".into());
+    }
+    let new_path = old.with_file_name(trimmed);
+    let new_path_str = new_path.to_string_lossy().into_owned();
+    if new_path.exists() {
+        return Err(format!("既に存在します: {}", new_path_str));
+    }
+
+    std::fs::rename(&old, &new_path).map_err(|e| {
+        format!("リネーム失敗 {} → {}: {}", old_path, new_path_str, e)
+    })?;
+
+    Ok(RenameRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Local::now().to_rfc3339(),
+        ops: vec![RenameOp::Rename {
+            old_path,
+            new_path: new_path_str,
+        }],
+    })
+}
+
 /// 即子フォルダのうち最初の 1 件を見つけたら true。権限エラーは false 扱い。
 fn has_subdir(path: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(path) else {

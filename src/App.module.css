@@ -43,7 +43,7 @@
 
 .main {
   display: grid;
-  grid-template-columns: 220px 320px 1fr;
+  grid-template-columns: var(--left-width, 220px) 6px 320px 1fr;
   overflow: hidden;
   min-height: 0;
 }
@@ -59,4 +59,20 @@
 
 .center {
   border-right: 1px solid #e0e0e0;
+}
+
+.resizer {
+  cursor: col-resize;
+  background: #e0e0e0;
+  border-left: 1px solid #d0d0d0;
+  border-right: 1px solid #d0d0d0;
+  transition: background 0.15s;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+.resizer:hover,
+.resizerActive {
+  background: #90caf9;
 }

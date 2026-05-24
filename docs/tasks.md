@@ -21,8 +21,9 @@
 | 12 | マクロ JSON 入出力 | 完了 |
 | 13 | 設定永続化 | 完了 |
 | 14 | フォルダ集約（共通プレフィックス + 移動 + 連番リネーム） | 完了 |
+| Post-v1.0.0 | フォルダツリーペイン強化（v1.1.0） | 完了 |
 
-完了フェーズ: 14 / 14 🎉
+完了フェーズ: 14 / 14 🎉  +  v1.1.0 QoL リリース
 
 ---
 
@@ -490,3 +491,39 @@ HANDOFF 仕様の単一マクロ JSON 例:
 - バックエンドテスト 127 件 PASS
 - README.md / README.ja.md / RELEASE_NOTES_v1.0.0.md を新規作成
 - CI/CD タグプッシュで自動ビルド & ドラフトリリース作成
+
+---
+
+## Post-v1.0.0 — フォルダツリーペイン強化
+
+> v1.1.0 として 2026-05-24 リリース。フォルダツリーペインの操作性を集中的に改善。
+
+### バックエンド
+- [x] `get_folder_stats(path)` コマンド: 指定フォルダ配下のファイル数と合計バイト数を再帰集計（WalkDir）。権限エラー等のエントリは黙ってスキップ
+- [x] `rename_folder(old_path, new_name)` コマンド: 単一フォルダのリネーム。空名・パス区切り文字・既存衝突を弾き、UNDO 可能な `RenameRecord` を返す
+- [x] `move_folder_to_trash(path)` コマンド: `trash` クレート v5 で OS 標準のゴミ箱（Windows: Recycle Bin / macOS: Trash）へ移動
+- [x] `Cargo.toml` に `trash = "5"` を追加
+
+### フロントエンド — FolderTree
+- [x] **ダブルクリックでインラインリネーム**: `.name` を `<input>` に差し替え。Enter で確定、Esc でキャンセル、blur で確定。エラー時は編集モードを維持して再入力可
+- [x] **フォルダ内容量の表示**: 各ノードの右側に「N / X MB」を淡色で表示。初回マウント時に `get_folder_stats` を非同期取得し `statsMap` にキャッシュ。ドライブルート（Windows の `C:\` 等）は性能上スキップ
+- [x] **右クリックコンテキストメニュー**: `onContextMenu` で `{path, name, x, y}` を state に保持し、メニュー外クリック / Escape で閉じる。「フォルダを削除（ゴミ箱へ移動）」項目から `@tauri-apps/plugin-dialog` の `ask()` で確認 → `move_folder_to_trash` を invoke
+- [x] **リネーム / 削除後の整合性確保**: 親フォルダの children を再取得 + childrenMap / expanded / statsMap から旧パス配下を掃除 + 現在選択中フォルダが影響を受ける場合は新パスへ付け替え（リネーム）または親へフォールバック（削除）
+- [x] **リロードシグナル**: `reloadSignal: number` prop を追加。値の変化で roots 再取得 + statsMap 破棄 + 展開中フォルダの children 再取得を実行。`expanded` は `expandedRef` 経由で読み deps から除外（展開操作で誤発火させない）
+
+### フロントエンド — App
+- [x] **左ペイン幅可変**: `App.module.css` の `grid-template-columns` を `var(--left-width, 220px) 6px 320px 1fr` に変更し、`.resizer` を `<div className={styles.left}>` と `<div className={styles.center}>` の間に挿入。pointer 系イベントを window-level に張るドラッグハンドラ実装、140〜800px に clamp
+- [x] **AppConfig.left_width** を追加し永続化フローに統合
+- [x] **再読み込みボタン拡張**: ActionBar の `onClear` で `preview.reload()` と `setFolderTreeReload((n) => n + 1)` を併発し、フォルダツリーも再取得
+- [x] **`onFolderRenamed`**: リネーム成功時に UNDO スタックへ push + プレビュー再読込
+- [x] **`onFolderDeleted` / `onError`**: 既存の `notice` バナーで通知
+
+### ドキュメント
+- [x] README.md / README.ja.md の「ワークスペース機能」セクションを更新（インラインリネーム / 内容量 / リサイザ / 右クリック削除 / 再読み込み統合）
+- [x] RELEASE_NOTES_v1.1.0.md（EN+JA）作成
+- [x] バージョン更新: `package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` を `1.1.0` へ、`Cargo.lock` を `cargo generate-lockfile` で再生成
+
+### 仕様メモ
+- ゴミ箱への移動はアプリ内 UNDO スタックには積まない（OS 側で復元可能なため二重管理回避）
+- スタッツの集計はノード可視時にのみトリガー（ドライブルートは除外）。リネーム / 削除 / 再読み込みで該当パス配下のキャッシュを破棄
+- リネーム失敗時（権限エラー・既存衝突等）は編集モードを維持し、`renameError` をツリー上部に表示

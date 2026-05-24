@@ -23,6 +23,9 @@ pub fn run() {
             commands::export_macros,
             commands::import_macros,
             commands::list_folder_tree,
+            commands::get_folder_stats,
+            commands::rename_folder,
+            commands::move_folder_to_trash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

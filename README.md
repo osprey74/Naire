@@ -57,6 +57,10 @@ Built with Tauri v2 + React + TypeScript + Rust.
 ### Workspace features
 
 - **Folder browser** — explorer-style tree (left pane), macOS `/Volumes/*`, Windows drive letters, mapped network drives
+  - **Inline rename** — double-click a folder name to rename it (Enter to commit, Esc to cancel); recorded in the UNDO stack
+  - **Content stats** — each folder shows file count and total size (recursive); drive roots skipped for performance
+  - **Resizable pane** — drag the splitter between the tree and the center panel; width persists across sessions
+  - **Right-click → ゴミ箱へ移動** — moves the folder to the OS Recycle Bin / Trash (restorable from the OS)
 - **Display filter** — semicolon-OR glob patterns (`*.jpg;*.png`), negation (`^(*.tmp)`), 7 built-in presets, 10-entry history
 - **Live preview** — see the new name beside the original; changed rows highlighted
 - **Row selection** — click / Ctrl+click (toggle) / Shift+click (range); rename only the selected rows when a subset is selected
@@ -64,8 +68,9 @@ Built with Tauri v2 + React + TypeScript + Rust.
 - **Sub-folder recursion** with depth control (0 = unlimited)
 - **Sequence counter** — decimal / hex / alpha (bijective base-26), per-folder reset option
 - **UNDO** — last 20 batches, `Ctrl+Z` keyboard shortcut
+- **Reload** — `再読み込み` button refreshes both the preview and the folder tree (including stats)
 - **Support button** — context-aware dropdown to insert variables, character classes, and presets
-- **Settings persistence** — folder, mode, filter, filter history, sequence config, column widths, macro library, window state
+- **Settings persistence** — folder, mode, filter, filter history, sequence config, column widths, folder-tree width, macro library, window state
 
 ### Cross-platform
 
@@ -170,11 +175,12 @@ The architectural principle: **all rename logic lives in Rust**. The frontend ne
 
 Naire follows [Semantic Versioning](https://semver.org/).
 
+- **v1.1.0** (2026-05-24) — Folder tree quality-of-life: inline rename, content stats, resizable pane, trash on right-click, unified reload.
 - **v1.0.0** (2026-05-17) — General Availability. Adds folder grouping (Phase 14), formalizes Naire as a stable product.
 - **v0.2.0** (2026-05-13) — UX polish: window state persistence, locale-aware date variables, case-control variables, drag-and-drop macro steps, network-mounted volumes on macOS.
 - **v0.1.0** (2026-05-12) — Initial public release.
 
-See [`RELEASE_NOTES_v1.0.0.md`](./RELEASE_NOTES_v1.0.0.md) for the latest detailed notes.
+See [`RELEASE_NOTES_v1.1.0.md`](./RELEASE_NOTES_v1.1.0.md) for the latest detailed notes.
 
 ---
 

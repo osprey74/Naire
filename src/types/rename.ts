@@ -157,4 +157,5 @@ export interface AppConfig {
   seq: SequenceConfig;
   macros: Macro[];
   column_widths?: PreviewColumnWidths;
+  left_width?: number;
 }
